@@ -54,16 +54,26 @@ const LINE_HEADER = {
 };
 
 exports.LineBot = functions.https.onRequest(async (req, res) => {
-  // console.log(req.body.events[0].message.type);
   const userId = req.body.events[0].source.userId;
-  if (req.body.events[0].message.type === "location") {
-    const responseText = await handle_location(req.body);
-    await reply(req.body, responseText);
-  } else if (req.body.events[0].message.type == "text") {
-    // console.log(userId);
-    const responseText = await handle_message(req.body, userId);
-    await reply(req.body, responseText);
-  } else return;
+
+  try {
+    if (req.body.events[0].message.type === "location") {
+      const responseText = await handle_location(req.body);
+      await reply(req.body, responseText);
+    } else if (req.body.events[0].message.type === "text") {
+      const responseText = await handle_message(req.body, userId);
+      await reply(req.body, responseText);
+    } else {
+      res.status(200).send("Event type not supported");
+      return;
+    }
+
+    // Send a success response to Line after processing
+    res.status(200).send("Message processed successfully");
+  } catch (error) {
+    console.error("Error processing message: ", error);
+    res.status(500).send("Error processing message");
+  }
 });
 
 function checkDateInput(indate) {
@@ -468,6 +478,7 @@ async function handle_message(event) {
     }
   } catch (err) {
     console.error(err);
+    res_message = err;
   } finally {
     if (connection) {
       try {
