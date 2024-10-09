@@ -1,3 +1,14 @@
+/* eslint-disable linebreak-style */
+/* eslint-disable object-curly-spacing */
+/* eslint-disable spaced-comment */
+/* eslint-disable quote-props */
+/* eslint-disable comma-dangle */
+/* eslint-disable indent */
+/* eslint-disable operator-linebreak */
+/* eslint-disable linebreak-style */
+/* eslint-disable camelcase */
+/* eslint-disable max-len */
+/* eslint-disable require-jsdoc */
 /**
  * Import function triggers from their respective submodules:
  *
@@ -23,14 +34,11 @@ const logger = require("firebase-functions/logger");
 const functions = require("firebase-functions/v1");
 const request = require("request-promise");
 const axios = require("axios"); // Import axios for making HTTP requests
+// Import the moment-timezone library to work with time zones
+const moment = require("moment-timezone");
 
 // index.js or app.js
 require("dotenv").config(); // Load .env file
-
-// Import the moment-timezone library to work with time zones
-const moment = require("moment-timezone");
-// Define the time zone variable
-const tz = "Asia/Taipei"; // Replace this with your intended time zone
 
 // Define the Autonomous Database variables
 const username = process.env.DB_USER;
@@ -50,11 +58,11 @@ exports.LineBot = functions.https.onRequest(async (req, res) => {
   const userId = req.body.events[0].source.userId;
   if (req.body.events[0].message.type === "location") {
     const responseText = await handle_location(req.body);
-    reply(req.body, responseText);
+    await reply(req.body, responseText);
   } else if (req.body.events[0].message.type == "text") {
     // console.log(userId);
     const responseText = await handle_message(req.body, userId);
-    reply(req.body, responseText);
+    await reply(req.body, responseText);
   } else return;
 });
 
@@ -90,6 +98,17 @@ function getMRange(indate) {
   const mrange = [firstDayOfMonth.getDate(), lastDayOfMonth.getDate()];
 
   return mrange;
+}
+
+async function getWallet(connection, userid) {
+  const sql_select_with_param =
+    "SELECT u.wallet_id, w.wallet_name, w.timezone from USERS u JOIN wallet w ON u.uname = w.uname AND u.wallet_id = w.wallet_id where u.UNAME = :uname";
+  const data_tuple = [userid];
+  const records = await connection.execute(sql_select_with_param, data_tuple);
+
+  if (records.rows.length > 0) {
+    return records.rows[0];
+  } else return -1;
 }
 
 function getSqlQuery(oper, withnote = 1, datefmt = 3) {
@@ -128,11 +147,27 @@ function getSqlQuery(oper, withnote = 1, datefmt = 3) {
       db_datefmt = "YYYY";
     }
 
-    return `SELECT TO_CHAR(fulldate,'${db_datefmt}'), sum(EXVALUE) from expense where UNAME = :uname and TO_CHAR(fulldate,'${db_datefmt}') = :jdate group by TO_CHAR(fulldate,'${db_datefmt}')`;
+    return `SELECT TO_CHAR(fulldate,'${db_datefmt}'), sum(EXVALUE) from expense where UNAME = :uname and WALLET_ID = :wallet_id and TO_CHAR(fulldate,'${db_datefmt}') = :jdate group by TO_CHAR(fulldate,'${db_datefmt}')`;
+  }
+
+  if (oper === "create") {
+    return "insert into WALLET values(:uname, :wallet_id, :wallet_name, :tz)";
+  }
+
+  if (oper === "wallet") {
+    return "SELECT wallet_id, wallet_name, timezone from wallet where UNAME = :uname ORDER BY 1";
+  }
+
+  if (oper === "change_wallet") {
+    return "UPDATE dbuser1.users SET wallet_id = :wallet_id WHERE UNAME = :uname";
+  }
+
+  if (oper === "upsert_wallet") {
+    return "MERGE INTO dbuser1.users u USING (SELECT :uname AS uname, :wallet_id AS wallet_id FROM dual) s ON (u.uname = s.uname) WHEN MATCHED THEN UPDATE SET u.wallet_id = s.wallet_id WHEN NOT MATCHED THEN INSERT (uname, wallet_id) VALUES (s.uname, s.wallet_id)";
   }
 
   if (oper === "sumall") {
-    return "SELECT sum(EXVALUE), null as firstday from expense where UNAME = :uname UNION SELECT null, TO_CHAR(min(fulldate),'YYYY-MM-DD') from expense where UNAME = :uname";
+    return "SELECT sum(EXVALUE), null as firstday from expense where UNAME = :uname and WALLET_ID = :wallet_id UNION SELECT null, TO_CHAR(min(fulldate),'YYYY-MM-DD') from expense where UNAME = :uname and WALLET_ID = :wallet_id";
   }
 
   if (oper === "search") {
@@ -140,71 +175,32 @@ function getSqlQuery(oper, withnote = 1, datefmt = 3) {
   }
 
   if (oper === "sumbymonth") {
-    return "select TO_CHAR(fulldate,'YYYY-MM'),sum(exvalue) from expense where UNAME = :uname group by TO_CHAR(fulldate,'YYYY-MM') order by 1 asc";
+    return "select TO_CHAR(fulldate,'YYYY-MM'),sum(exvalue) from expense where UNAME = :uname and WALLET_ID = :wallet_id group by TO_CHAR(fulldate,'YYYY-MM') order by 1 asc";
   }
 
   if (oper === "sumthismonth") {
-    return "select TO_CHAR(fulldate,'YYYY-MM'),sum(exvalue) from expense where UNAME = :uname and TO_CHAR(fulldate,'YYYY-MM') = :tmonth group by TO_CHAR(fulldate,'YYYY-MM') order by 1 desc fetch first row only";
+    return "select TO_CHAR(fulldate,'YYYY-MM'),sum(exvalue) from expense where UNAME = :uname and WALLET_ID = :wallet_id and TO_CHAR(fulldate,'YYYY-MM') = :tmonth group by TO_CHAR(fulldate,'YYYY-MM') order by 1 desc fetch first row only";
   }
 }
 
-async function allDay(cur, userid, justdate, noteflag = 1) {
-  let new_message = "";
-  const datefmt = checkDateInput(justdate);
-
-  if (datefmt < 0) {
-    return "Only date format 'YYYY-[MM]-[DD]' is allowed";
-  }
-
-  const sql_select_with_param = getSqlQuery("showday", noteflag, datefmt);
-  const data_tuple = [userid, justdate];
-
-  try {
-    await cur.execute(sql_select_with_param, data_tuple);
-    const records = await cur.fetchall();
-
-    if (records.length === 0) {
-      return "no records found on " + justdate;
-    }
-
-    for (const row of records) {
-      const newrec =
-        noteflag === 1
-          ? `${row[0]}, ${row[1]} ${row[2]}`
-          : `${row[0]}, ${row[1]}`;
-
-      new_message += newrec;
-
-      if (row !== records[records.length - 1]) {
-        new_message += "\n";
-      }
-    }
-
-    return new_message;
-  } catch (error) {
-    // Handle any error that may occur during database operation
-    console.error(error);
-    return "An error occurred while fetching records.";
-  }
-}
-
-async function sumDay(connection, userid, justdate) {
+async function sumDay(connection, userid, justdate, wallet_id) {
   let new_message = "";
   const datefmt = checkDateInput(justdate);
   if (datefmt < 0) {
     return "Only date format 'YYYY-[MM]-[DD]' is allowed";
   }
   const sql_select_with_param = getSqlQuery("sumday", 1, datefmt);
-  const data_tuple = [userid, justdate];
+  const data_tuple = [userid, wallet_id, justdate];
   const records = await connection.execute(sql_select_with_param, data_tuple);
 
   if (records.rows.length === 0) {
-    return "No records found on " + justdate;
+    return `[${wallet_id}]` + "No records found on " + justdate;
   }
 
   for (let i = 0; i < records.rows.length; i++) {
     const row = records.rows[i];
-    const newrec = "Total expense on " + row[0] + " = " + row[1];
+    const newrec =
+      `[${wallet_id}]` + "Total expense on " + row[0] + " = " + row[1];
     new_message += newrec;
     if (i === records.length - 1) {
       // If it's the last record, don't add a newline
@@ -226,21 +222,90 @@ async function handle_message(event) {
       encoding: encoding_name,
     });
     console.log("Successfully connected to Oracle Database");
-    const msg_from_user = event.events[0].message.text;
-    const localDatetime = moment.tz(new Date(), tz);
-    const userid = event.events[0].source.userId;
-    const targetdate = localDatetime.format("YYYY-MM-DD HH:mm:ss");
-    let justdate = localDatetime.format("YYYY-MM-DD");
-    let justhour = localDatetime.format("HH:mm:ss");
-    const this_year_n_month = localDatetime.format("YYYY-MM");
-    let year_n_month = this_year_n_month;
 
+    const msg_from_user = event.events[0].message.text;
+    const userid = event.events[0].source.userId;
     let extracted = msg_from_user.split(" ");
     const inst_from_user = extracted[0].toLowerCase();
 
     console.log(inst_from_user);
 
-    if (inst_from_user.toLowerCase() === "help") {
+    // Create Wallet
+    if (inst_from_user === "create") {
+      const sql_select_with_param =
+        "SELECT max(wallet_id) from wallet where UNAME = :uname";
+      const data_tuple = [userid];
+      const records = await connection.execute(
+        sql_select_with_param,
+        data_tuple
+      );
+
+      // Validate the timezone
+      if (!moment.tz.zone(extracted[2])) {
+        return "Invalid timezone provided. Please provide a valid timezone.";
+      }
+
+      let new_wallet_id;
+      if (records.rows[0][0] === null) {
+        // No wallet found, so start with wallet_id = 1
+        new_wallet_id = 0;
+      } else {
+        // If a wallet was found, increment the max wallet_id by 1
+        new_wallet_id = records.rows[0][0] + 1;
+      }
+
+      const sql_insert_with_param = getSqlQuery("create");
+      const data_tuple1 = [userid, new_wallet_id, extracted[1], extracted[2]];
+      const insert_result = await connection.execute(
+        sql_insert_with_param,
+        data_tuple1
+      );
+
+      // Check if the insertion was successful
+      if (insert_result.rowsAffected > 0) {
+        // Upsert operation
+        const sql_upsert_with_param = `
+          MERGE INTO dbuser1.users u
+          USING (SELECT :uname AS uname, :wallet_id AS wallet_id FROM dual) s
+          ON (u.uname = s.uname)
+          WHEN MATCHED THEN
+              UPDATE SET u.wallet_id = s.wallet_id
+          WHEN NOT MATCHED THEN
+              INSERT (uname, wallet_id)
+              VALUES (s.uname, s.wallet_id)
+      `;
+        const data_tuple_upsert = [userid, new_wallet_id];
+        await connection.execute(sql_upsert_with_param, data_tuple_upsert);
+
+        await connection.commit();
+
+        res_message =
+          `[${new_wallet_id}] ${extracted[1]} created successfully!\n` +
+          `[${new_wallet_id}] ${extracted[1]} is your current wallet (${extracted[2]})`;
+        return res_message;
+      } else {
+        return "Failed to create wallet.";
+      }
+    }
+
+    const wallet = await getWallet(connection, userid);
+
+    if (wallet == -1) {
+      res_message =
+        "No wallet found, please create wallet\n\n" +
+        "create [wallet_name] [timezone]\n" +
+        "For example, 'create default_wallet Asia/Taipei'";
+      return res_message;
+    }
+    const tz = wallet[2]; // Use wallet's timezone
+    const localDatetime = moment.tz(new Date(), tz);
+
+    let justdate = localDatetime.format("YYYY-MM-DD");
+    let justhour = localDatetime.format("HH:mm:ss");
+    const this_year_n_month = localDatetime.format("YYYY-MM");
+    let year_n_month = this_year_n_month;
+
+    if (inst_from_user === "help") {
       res_message =
         "Available commands are listed below: \n\n" +
         "1. {+,-}10000 [detail]: add expense or income which detail is an optional\n" +
@@ -254,37 +319,79 @@ async function handle_message(event) {
     } else if (inst_from_user === "sum" && extracted.length === 2) {
       // Expect date to be 'YYYY-MM-DD' format only
       const targetdate = extracted[1];
-      res_message = await sumDay(connection, userid, targetdate);
+      res_message = await sumDay(connection, userid, targetdate, wallet[0]);
     } else if (inst_from_user === "sumall") {
       const sql_select_with_param = getSqlQuery("sumall");
-      const data_tuple = [userid, userid];
+      const data_tuple = [userid, wallet[0], userid, wallet[0]];
       const records = await connection.execute(
         sql_select_with_param,
         data_tuple
       );
       const record_sum = records.rows[0][0];
       const record_fristdate = records.rows[1][1];
-      res_message = `Total Expense: ${record_sum} starting from ${record_fristdate}`;
+      res_message = `[${wallet[0]}] Total Expense: ${record_sum} starting from ${record_fristdate}`;
     } else if (inst_from_user === "sumbymonth") {
       const sql_select_with_param = getSqlQuery("sumbymonth", 0);
-      const data_tuple = [userid];
+      const data_tuple = [userid, wallet[0]];
       const records = await connection.execute(
         sql_select_with_param,
         data_tuple
       );
-      res_message = "Total Monthly Expense \n";
+      res_message = `[${wallet[0]}] Total Monthly Expense \n`;
       for (const row of records.rows) {
         const newrec = `${row[0]}: Total Expense = ${row[1]}`;
         res_message += newrec + "\n";
       }
-    } else if (inst_from_user === "avgbymonth") {
-      const sql_select_with_param = getSqlQuery("sumbymonth", 0);
+    } else if (inst_from_user === "wallet" && extracted.length == 1) {
+      const sql_select_with_param = getSqlQuery("wallet");
       const data_tuple = [userid];
       const records = await connection.execute(
         sql_select_with_param,
         data_tuple
       );
-      res_message = "Average Daily Expense \n";
+      res_message = "List of your Wallet \n";
+      for (const row of records.rows) {
+        let newrec;
+        if (row[0] == wallet[0]) {
+          newrec = `*[${row[0]}]: ${row[1]}(tz: ${row[2]})`;
+        } else {
+          newrec = `[${row[0]}]: ${row[1]}(tz: ${row[2]})`;
+        }
+        res_message += newrec + "\n";
+      }
+    } else if (inst_from_user === "wallet" && extracted.length == 2) {
+      let sql_select_with_param =
+        "SELECT max(wallet_id) from wallet where UNAME = :uname";
+      let data_tuple = [userid];
+      let records = await connection.execute(sql_select_with_param, data_tuple);
+      const max_wallet_id = records.rows[0][0];
+
+      if (extracted[1] < -1 || extracted[1] > max_wallet_id) {
+        return "Please input valid wallet_id";
+      }
+
+      if (extracted[1] == wallet[0]) {
+        return `You are already using [${wallet[0]}] ${wallet[1]}`;
+      }
+
+      const sql_update_with_param = getSqlQuery("change_wallet");
+      const data_tuple1 = [extracted[1], userid];
+      await connection.execute(sql_update_with_param, data_tuple1);
+      await connection.commit();
+
+      sql_select_with_param =
+        "SELECT wallet_name, timezone from wallet where UNAME = :uname AND wallet_id = :wallet_id";
+      data_tuple = [userid, extracted[1]];
+      records = await connection.execute(sql_select_with_param, data_tuple);
+      res_message = `[${extracted[1]}] ${records.rows[0][0]} is your current wallet (${records.rows[0][1]})`;
+    } else if (inst_from_user === "avgbymonth") {
+      const sql_select_with_param = getSqlQuery("sumbymonth", 0);
+      const data_tuple = [userid, wallet[0]];
+      const records = await connection.execute(
+        sql_select_with_param,
+        data_tuple
+      );
+      res_message = `[${wallet[0]}] Average Daily Expense \n`;
       for (const row of records.rows) {
         const month_range = getMRange(row[0]);
         const num_days =
@@ -300,7 +407,6 @@ async function handle_message(event) {
       inst_from_user.startsWith("+") ||
       inst_from_user.startsWith("-")
     ) {
-      // Send message to user.
       const get_date = msg_from_user.split("-d ");
       const get_hour = msg_from_user.split("-h ");
       extracted = get_date[0].split(" ");
@@ -315,24 +421,33 @@ async function handle_message(event) {
         justhour = extracted_hour;
       }
 
-      const targetdate = justdate + " " + justhour;
-
+      const targetdate = `${justdate} ${justhour}`;
+      // const localDateForDB = moment.tz(targetdate, tz).toDate();
+      // console.log(targetdate, localDateForDB);
       let note = "";
       if (extracted.length > 1) {
         note = extracted.slice(1).join(" ");
       }
 
       const sql_insert_with_param =
-        "INSERT INTO expense(UNAME,EXVALUE,FULLDATE,NOTE) VALUES (:uname,:val,TO_DATE(:fulldate,'YYYY-MM-DD hh24:mi:ss'),:note)";
-      const data_tuple1 = [userid, inst_from_user, targetdate, note];
-      const insert_result = await connection.execute(
-        sql_insert_with_param,
-        data_tuple1
+        "INSERT INTO expense(UNAME,EXVALUE,FULLDATE,NOTE,WALLET_ID) VALUES (:uname,:val,TO_DATE(:targetdate, 'YYYY-MM-DD HH24:MI:SS'),:note,:WALLET_ID)";
+      const data_tuple1 = [
+        userid,
+        inst_from_user,
+        targetdate,
+        note,
+        parseInt(wallet[0]),
+      ];
+      await connection.execute(sql_insert_with_param, data_tuple1);
+      const res_message1 = await sumDay(
+        connection,
+        userid,
+        justdate,
+        wallet[0]
       );
-      let res_message1 = await sumDay(connection, userid, justdate);
 
       const sql_select_with_param = getSqlQuery("sumthismonth", 0);
-      const data_tuple2 = [userid, year_n_month];
+      const data_tuple2 = [userid, wallet[0], year_n_month];
       const records = await connection.execute(
         sql_select_with_param,
         data_tuple2
@@ -345,7 +460,7 @@ async function handle_message(event) {
         num_days = month_range[1];
       }
 
-      let res_message2 = "\n\n**Expense Report This Month**\n";
+      let res_message2 = `\n\n**Expense Report This Month**\n`;
       res_message2 += "Total = " + records.rows[0][1] + "\n";
       res_message2 += "Avg.  = " + (records.rows[0][1] / num_days).toFixed(2);
       connection.commit();
@@ -376,7 +491,7 @@ async function handle_location(event) {
   const radius = 1000; // Radius in meters (adjust as needed)
   const type = "restaurant"; // Type of places you want to search for (e.g., restaurant, cafe, etc.)
   let nextPageToken = null; // Initialize nextPageToken to null
-  let places = []; // Array to store all places
+  const places = []; // Array to store all places
 
   // Loop until either we have retrieved 50 places or there are no more pages
   while (places.length < 50) {
