@@ -46,6 +46,8 @@ const pwd = process.env.DB_PASS;
 const dsn_name = process.env.DSN_NAME;
 const encoding_name = "UTF-8";
 const oracledb = require("oracledb");
+const API_URL = process.env.API_URL;
+const API_KEY = process.env.API_KEY;
 
 const LINE_MESSAGING_API = "https://api.line.me/v2/bot/message";
 const LINE_HEADER = {
@@ -110,15 +112,28 @@ function getMRange(indate) {
   return mrange;
 }
 
-async function getWallet(connection, userid) {
-  const sql_select_with_param =
-    "SELECT u.wallet_id, w.wallet_name, w.timezone from USERS u JOIN wallet w ON u.uname = w.uname AND u.wallet_id = w.wallet_id where u.UNAME = :uname";
-  const data_tuple = [userid];
-  const records = await connection.execute(sql_select_with_param, data_tuple);
+async function getWallet(userid) {
+  try {
+    const response = await axios.get(`${API_URL}/wallet`, {
+      params: { userid },
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": API_KEY,
+      },
+    });
 
-  if (records.rows.length > 0) {
-    return records.rows[0];
-  } else return -1;
+    if (response.data.status === "success" && response.data.data.length > 0) {
+      const wallet = response.data.data[0];
+
+      return {
+        wallet_id: wallet[0],
+        wallet_name: wallet[1],
+        timezone: wallet[2],
+      };
+    }
+  } catch (error) {
+    return -1;
+  }
 }
 
 function getSqlQuery(oper, withnote = 1, datefmt = 3) {
@@ -298,7 +313,7 @@ async function handle_message(event) {
       }
     }
 
-    const wallet = await getWallet(connection, userid);
+    const wallet = await getWallet(userid);
 
     if (wallet == -1) {
       res_message =
@@ -307,7 +322,7 @@ async function handle_message(event) {
         "For example, 'create default_wallet Asia/Taipei'";
       return res_message;
     }
-    const tz = wallet[2]; // Use wallet's timezone
+    const tz = wallet.timezone; // Use wallet's timezone
     const localDatetime = moment.tz(new Date(), tz);
 
     let justdate = localDatetime.format("YYYY-MM-DD");
@@ -331,92 +346,118 @@ async function handle_message(event) {
       const targetdate = extracted[1];
       res_message = await sumDay(connection, userid, targetdate, wallet[0]);
     } else if (inst_from_user === "sumall") {
-      const sql_select_with_param = getSqlQuery("sumall");
-      const data_tuple = [userid, wallet[0], userid, wallet[0]];
-      const records = await connection.execute(
-        sql_select_with_param,
-        data_tuple
-      );
+      try {
+        const response = await axios.get(`${API_URL}/sumall`, {
+          params: {
+            userid: userid,
+            wallet_id: wallet.wallet_id,
+          },
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": API_KEY,
+          },
+        });
 
-      if (records.rows[0][0] == null) {
-        res_message = `[${wallet[0]}] No data found !!`;
-      } else {
-        const record_sum = records.rows[0][0];
-        const record_fristdate = records.rows[1][1];
-        res_message = `[${wallet[0]}] Total Expense: ${record_sum} starting from ${record_fristdate}`;
+        const record_sum = response.data.data.total_balance;
+        const record_fristdate = response.data.data.first_date;
+        res_message = `[${wallet.wallet_id}] Total Expense: ${record_sum} starting from ${record_fristdate}`;
+      } catch (error) {
+        res_message = error.message;
       }
     } else if (inst_from_user === "sumbymonth") {
-      const sql_select_with_param = getSqlQuery("sumbymonth", 0);
-      const data_tuple = [userid, wallet[0]];
-      const records = await connection.execute(
-        sql_select_with_param,
-        data_tuple
-      );
-      res_message = `[${wallet[0]}] Total Monthly Expense \n`;
-      for (const row of records.rows) {
-        const newrec = `${row[0]}: Total Expense = ${row[1]}`;
-        res_message += newrec + "\n";
+      try {
+        const response = await axios.get(`${API_URL}/sumbymonth`, {
+          params: {
+            userid: userid,
+            wallet_id: wallet.wallet_id,
+          },
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": API_KEY,
+          },
+        });
+
+        res_message = `[${wallet.wallet_id}] Total Monthly Expense \n`;
+        for (const row of response.data.data.monthlyExpenses) {
+          const newrec = `${row.month}: Expense = ${row.totalExpense}`;
+          res_message += newrec + "\n";
+        }
+      } catch (error) {
+        res_message = error.message;
+      }
+    } else if (inst_from_user === "avgbymonth") {
+      try {
+        const response = await axios.get(`${API_URL}/sumbymonth`, {
+          params: {
+            userid: userid,
+            wallet_id: wallet.wallet_id,
+          },
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": API_KEY,
+          },
+        });
+
+        res_message = `[${wallet.wallet_id}] Average Daily Expense \n`;
+        for (const row of response.data.data.monthlyExpenses) {
+          const month_range = getMRange(row.month);
+          const num_days =
+            row.month === this_year_n_month
+              ? parseInt(localDatetime.toISOString().slice(8, 10))
+              : month_range[1];
+          const newrec = `${row.month}: Avg. Expense = ${(
+            row.totalExpense / num_days
+          ).toFixed(2)}`;
+          res_message += newrec + "\n";
+        }
+      } catch (error) {
+        res_message = error.message;
       }
     } else if (inst_from_user === "wallet" && extracted.length == 1) {
-      const sql_select_with_param = getSqlQuery("wallet");
-      const data_tuple = [userid];
-      const records = await connection.execute(
-        sql_select_with_param,
-        data_tuple
-      );
-      res_message = "List of your Wallet \n";
-      for (const row of records.rows) {
-        let newrec;
-        if (row[0] == wallet[0]) {
-          newrec = `*[${row[0]}]: ${row[1]}(tz: ${row[2]})`;
-        } else {
-          newrec = `[${row[0]}]: ${row[1]}(tz: ${row[2]})`;
+      try {
+        const response = await axios.get(`${API_URL}/wallets`, {
+          params: { userid },
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": API_KEY,
+          },
+        });
+
+        res_message = "List of your Wallet \n";
+        for (const row of response.data.data) {
+          let newrec;
+          if (row.wallet_id == wallet.wallet_id) {
+            newrec = `*[${row.wallet_id}]: ${row.wallet_name}(tz: ${row.timezone})`;
+          } else {
+            newrec = `[${row.wallet_id}]: ${row.wallet_name}(tz: ${row.timezone})`;
+          }
+          res_message += newrec + "\n";
         }
-        res_message += newrec + "\n";
+      } catch (error) {
+        res_message = error.message;
       }
     } else if (inst_from_user === "wallet" && extracted.length == 2) {
-      let sql_select_with_param =
-        "SELECT max(wallet_id) from wallet where UNAME = :uname";
-      let data_tuple = [userid];
-      let records = await connection.execute(sql_select_with_param, data_tuple);
-      const max_wallet_id = records.rows[0][0];
-
-      if (extracted[1] < -1 || extracted[1] > max_wallet_id) {
-        return "Please input valid wallet_id";
-      }
-
-      if (extracted[1] == wallet[0]) {
-        return `You are already using [${wallet[0]}] ${wallet[1]}`;
-      }
-
-      const sql_update_with_param = getSqlQuery("change_wallet");
-      const data_tuple1 = [extracted[1], userid];
-      await connection.execute(sql_update_with_param, data_tuple1);
-      await connection.commit();
-
-      sql_select_with_param =
-        "SELECT wallet_name, timezone from wallet where UNAME = :uname AND wallet_id = :wallet_id";
-      data_tuple = [userid, extracted[1]];
-      records = await connection.execute(sql_select_with_param, data_tuple);
-      res_message = `[${extracted[1]}] ${records.rows[0][0]} is your current wallet (${records.rows[0][1]})`;
-    } else if (inst_from_user === "avgbymonth") {
-      const sql_select_with_param = getSqlQuery("sumbymonth", 0);
-      const data_tuple = [userid, wallet[0]];
-      const records = await connection.execute(
-        sql_select_with_param,
-        data_tuple
-      );
-      res_message = `[${wallet[0]}] Average Daily Expense \n`;
-      for (const row of records.rows) {
-        const month_range = getMRange(row[0]);
-        const num_days =
-          row[0] === this_year_n_month
-            ? parseInt(localDatetime.toISOString().slice(8, 10))
-            : month_range[1];
-        const newrec = `${row[0]}: Avg. Expense = ${(row[1] / num_days).toFixed(
-          2
-        )}`;
-        res_message += newrec + "\n";
+      try {
+        const response = await axios.post(
+          `${API_URL}/changeWallet`,
+          {
+            uname: userid,
+            wallet_id: extracted[1],
+          },
+          {
+            headers: {
+              "Content-Type": "application/json",
+              "x-api-key": API_KEY,
+            },
+          }
+        );
+        if (response.data.message) {
+          res_message = response.data.message;
+        } else {
+          res_message = `[${response.data.data.new_wallet_id}] ${response.data.data.new_wallet_name} is your current wallet (${response.data.data.new_wallet_tz})`;
+        }
+      } catch (error) {
+        res_message = error.message;
       }
     } else if (
       inst_from_user.startsWith("+") ||
@@ -437,8 +478,6 @@ async function handle_message(event) {
       }
 
       const targetdate = `${justdate} ${justhour}`;
-      // const localDateForDB = moment.tz(targetdate, tz).toDate();
-      // console.log(targetdate, localDateForDB);
       let note = "";
       if (extracted.length > 1) {
         note = extracted.slice(1).join(" ");
@@ -451,18 +490,19 @@ async function handle_message(event) {
         inst_from_user,
         targetdate,
         note,
-        parseInt(wallet[0]),
+        parseInt(wallet.wallet_id),
       ];
       await connection.execute(sql_insert_with_param, data_tuple1);
+
       const res_message1 = await sumDay(
         connection,
         userid,
         justdate,
-        wallet[0]
+        wallet.wallet_id
       );
 
       const sql_select_with_param = getSqlQuery("sumthismonth", 0);
-      const data_tuple2 = [userid, wallet[0], year_n_month];
+      const data_tuple2 = [userid, wallet.wallet_id, year_n_month];
       const records = await connection.execute(
         sql_select_with_param,
         data_tuple2
