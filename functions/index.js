@@ -337,9 +337,14 @@ async function handle_message(event) {
         sql_select_with_param,
         data_tuple
       );
-      const record_sum = records.rows[0][0];
-      const record_fristdate = records.rows[1][1];
-      res_message = `[${wallet[0]}] Total Expense: ${record_sum} starting from ${record_fristdate}`;
+
+      if (records.rows[0][0] == null) {
+        res_message = `[${wallet[0]}] No data found !!`;
+      } else {
+        const record_sum = records.rows[0][0];
+        const record_fristdate = records.rows[1][1];
+        res_message = `[${wallet[0]}] Total Expense: ${record_sum} starting from ${record_fristdate}`;
+      }
     } else if (inst_from_user === "sumbymonth") {
       const sql_select_with_param = getSqlQuery("sumbymonth", 0);
       const data_tuple = [userid, wallet[0]];
