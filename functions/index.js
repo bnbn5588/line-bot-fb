@@ -40,12 +40,6 @@ const moment = require("moment-timezone");
 // index.js or app.js
 require("dotenv").config(); // Load .env file
 
-// Define the Autonomous Database variables
-const username = process.env.DB_USER;
-const pwd = process.env.DB_PASS;
-const dsn_name = process.env.DSN_NAME;
-const encoding_name = "UTF-8";
-const oracledb = require("oracledb");
 const API_URL = process.env.API_URL;
 const API_KEY = process.env.API_KEY;
 
@@ -78,28 +72,6 @@ exports.LineBot = functions.https.onRequest(async (req, res) => {
   }
 });
 
-function checkDateInput(indate) {
-  const splited = indate.split("-");
-  if (splited.length < 1) {
-    return -1;
-  }
-  let date_pattern;
-  if (splited.length === 3) {
-    date_pattern = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/;
-  } else if (splited.length === 2) {
-    date_pattern = /^([0-9]{4})-([0-9]{2})$/;
-  } else if (splited.length === 1) {
-    date_pattern = /^([0-9]{4})$/;
-  }
-
-  const z = indate.match(date_pattern);
-  if (z) {
-    return z.length - 1;
-  } else {
-    return -1;
-  }
-}
-
 function getMRange(indate) {
   const splited = indate.split("-");
   const nyear = parseInt(splited[0]);
@@ -126,9 +98,9 @@ async function getWallet(userid) {
       const wallet = response.data.data[0];
 
       return {
-        wallet_id: wallet[0],
-        wallet_name: wallet[1],
-        timezone: wallet[2],
+        wallet_id: String(wallet[0]),
+        wallet_name: String(wallet[1]),
+        timezone: String(wallet[2]),
       };
     }
   } catch (error) {
@@ -136,118 +108,10 @@ async function getWallet(userid) {
   }
 }
 
-function getSqlQuery(oper, withnote = 1, datefmt = 3) {
-  let db_datefmt = "";
-
-  if (oper === "all" && withnote === 1) {
-    return "SELECT TO_CHAR(fulldate,'YYYY-MM-DD hh24:mi:ss'), EXVALUE, note from expense where UNAME = :uname order by 1";
-  }
-
-  if (oper === "all" && withnote === 0) {
-    return "SELECT TO_CHAR(fulldate,'YYYY-MM-DD hh24:mi:ss'), EXVALUE from expense where UNAME = :uname order by 1";
-  }
-
-  if (oper === "showday") {
-    if (datefmt === 3) {
-      db_datefmt = "YYYY-MM-DD";
-    } else if (datefmt === 2) {
-      db_datefmt = "YYYY-MM";
-    } else if (datefmt === 1) {
-      db_datefmt = "YYYY";
-    }
-
-    if (withnote === 1) {
-      return `SELECT TO_CHAR(fulldate,'YYYY-MM-DD hh24:mi:ss'), EXVALUE, note from expense where UNAME = :uname and TO_CHAR(fulldate,'${db_datefmt}') = :jdate order by 1`;
-    } else {
-      return `SELECT TO_CHAR(fulldate,'YYYY-MM-DD hh24:mi:ss'), EXVALUE from expense where UNAME = :uname and TO_CHAR(fulldate,'${db_datefmt}') = :jdate order by 1`;
-    }
-  }
-
-  if (oper === "sumday") {
-    if (datefmt === 3) {
-      db_datefmt = "YYYY-MM-DD";
-    } else if (datefmt === 2) {
-      db_datefmt = "YYYY-MM";
-    } else if (datefmt === 1) {
-      db_datefmt = "YYYY";
-    }
-
-    return `SELECT TO_CHAR(fulldate,'${db_datefmt}'), sum(EXVALUE) from expense where UNAME = :uname and WALLET_ID = :wallet_id and TO_CHAR(fulldate,'${db_datefmt}') = :jdate group by TO_CHAR(fulldate,'${db_datefmt}')`;
-  }
-
-  if (oper === "create") {
-    return "insert into WALLET values(:uname, :wallet_id, :wallet_name, :tz)";
-  }
-
-  if (oper === "wallet") {
-    return "SELECT wallet_id, wallet_name, timezone from wallet where UNAME = :uname ORDER BY 1";
-  }
-
-  if (oper === "change_wallet") {
-    return "UPDATE dbuser1.users SET wallet_id = :wallet_id WHERE UNAME = :uname";
-  }
-
-  if (oper === "upsert_wallet") {
-    return "MERGE INTO dbuser1.users u USING (SELECT :uname AS uname, :wallet_id AS wallet_id FROM dual) s ON (u.uname = s.uname) WHEN MATCHED THEN UPDATE SET u.wallet_id = s.wallet_id WHEN NOT MATCHED THEN INSERT (uname, wallet_id) VALUES (s.uname, s.wallet_id)";
-  }
-
-  if (oper === "sumall") {
-    return "SELECT sum(EXVALUE), null as firstday from expense where UNAME = :uname and WALLET_ID = :wallet_id UNION SELECT null, TO_CHAR(min(fulldate),'YYYY-MM-DD') from expense where UNAME = :uname and WALLET_ID = :wallet_id";
-  }
-
-  if (oper === "search") {
-    return "SELECT TO_CHAR(fulldate,'YYYY-MM-DD hh24:mi:ss'), EXVALUE, note from expense where UNAME = :uname and note like :keysearch order by 1";
-  }
-
-  if (oper === "sumbymonth") {
-    return "select TO_CHAR(fulldate,'YYYY-MM'),sum(exvalue) from expense where UNAME = :uname and WALLET_ID = :wallet_id group by TO_CHAR(fulldate,'YYYY-MM') order by 1 asc";
-  }
-
-  if (oper === "sumthismonth") {
-    return "select TO_CHAR(fulldate,'YYYY-MM'),sum(exvalue) from expense where UNAME = :uname and WALLET_ID = :wallet_id and TO_CHAR(fulldate,'YYYY-MM') = :tmonth group by TO_CHAR(fulldate,'YYYY-MM') order by 1 desc fetch first row only";
-  }
-}
-
-async function sumDay(connection, userid, justdate, wallet_id) {
-  let new_message = "";
-  const datefmt = checkDateInput(justdate);
-  if (datefmt < 0) {
-    return "Only date format 'YYYY-[MM]-[DD]' is allowed";
-  }
-  const sql_select_with_param = getSqlQuery("sumday", 1, datefmt);
-  const data_tuple = [userid, wallet_id, justdate];
-  const records = await connection.execute(sql_select_with_param, data_tuple);
-
-  if (records.rows.length === 0) {
-    return `[${wallet_id}]` + "No records found on " + justdate;
-  }
-
-  for (let i = 0; i < records.rows.length; i++) {
-    const row = records.rows[i];
-    const newrec =
-      `[${wallet_id}]` + "Total expense on " + row[0] + " = " + row[1];
-    new_message += newrec;
-    if (i === records.length - 1) {
-      // If it's the last record, don't add a newline
-    } else {
-      new_message += "\n";
-    }
-  }
-  return new_message;
-}
-
 async function handle_message(event) {
   let res_message = "-";
-  let connection;
-  try {
-    connection = await oracledb.getConnection({
-      user: username,
-      password: pwd,
-      connectString: dsn_name,
-      encoding: encoding_name,
-    });
-    console.log("Successfully connected to Oracle Database");
 
+  try {
     const msg_from_user = event.events[0].message.text;
     const userid = event.events[0].source.userId;
     let extracted = msg_from_user.split(" ");
@@ -257,59 +121,27 @@ async function handle_message(event) {
 
     // Create Wallet
     if (inst_from_user === "create") {
-      const sql_select_with_param =
-        "SELECT max(wallet_id) from wallet where UNAME = :uname";
-      const data_tuple = [userid];
-      const records = await connection.execute(
-        sql_select_with_param,
-        data_tuple
-      );
-
-      // Validate the timezone
-      if (!moment.tz.zone(extracted[2])) {
-        return "Invalid timezone provided. Please provide a valid timezone.";
-      }
-
-      let new_wallet_id;
-      if (records.rows[0][0] === null) {
-        // No wallet found, so start with wallet_id = 1
-        new_wallet_id = 0;
-      } else {
-        // If a wallet was found, increment the max wallet_id by 1
-        new_wallet_id = records.rows[0][0] + 1;
-      }
-
-      const sql_insert_with_param = getSqlQuery("create");
-      const data_tuple1 = [userid, new_wallet_id, extracted[1], extracted[2]];
-      const insert_result = await connection.execute(
-        sql_insert_with_param,
-        data_tuple1
-      );
-
-      // Check if the insertion was successful
-      if (insert_result.rowsAffected > 0) {
-        // Upsert operation
-        const sql_upsert_with_param = `
-          MERGE INTO dbuser1.users u
-          USING (SELECT :uname AS uname, :wallet_id AS wallet_id FROM dual) s
-          ON (u.uname = s.uname)
-          WHEN MATCHED THEN
-              UPDATE SET u.wallet_id = s.wallet_id
-          WHEN NOT MATCHED THEN
-              INSERT (uname, wallet_id)
-              VALUES (s.uname, s.wallet_id)
-      `;
-        const data_tuple_upsert = [userid, new_wallet_id];
-        await connection.execute(sql_upsert_with_param, data_tuple_upsert);
-
-        await connection.commit();
-
+      try {
+        const response = await axios.post(
+          `${API_URL}/createWallet`,
+          {
+            uname: userid,
+            wallet_name: extracted[1],
+            timezone: extracted[2],
+          },
+          {
+            headers: {
+              "Content-Type": "application/json",
+              "x-api-key": API_KEY,
+            },
+          }
+        );
         res_message =
-          `[${new_wallet_id}] ${extracted[1]} created successfully!\n` +
-          `[${new_wallet_id}] ${extracted[1]} is your current wallet (${extracted[2]})`;
+          `[${response.data.data.wallet_id}] ${response.data.data.wallet_name} created successfully!\n` +
+          `[${response.data.data.wallet_id}] ${response.data.data.wallet_name} is your current wallet (${response.data.data.timezone})`;
         return res_message;
-      } else {
-        return "Failed to create wallet.";
+      } catch (error) {
+        res_message = error.message;
       }
     }
 
@@ -341,15 +173,11 @@ async function handle_message(event) {
         "For example, sum 2022 | sum 2022-08\n\n" +
         "4. showall [-n]: show all transaction. include -n to ignore detail\n\n" +
         "5. sumall: sum all expense from starting date";
-    } else if (inst_from_user === "sum" && extracted.length === 2) {
-      // Expect date to be 'YYYY-MM-DD' format only
-      const targetdate = extracted[1];
-      res_message = await sumDay(connection, userid, targetdate, wallet[0]);
     } else if (inst_from_user === "sumall") {
       try {
         const response = await axios.get(`${API_URL}/sumall`, {
           params: {
-            userid: userid,
+            uname: userid,
             wallet_id: wallet.wallet_id,
           },
           headers: {
@@ -368,7 +196,7 @@ async function handle_message(event) {
       try {
         const response = await axios.get(`${API_URL}/sumbymonth`, {
           params: {
-            userid: userid,
+            uname: userid,
             wallet_id: wallet.wallet_id,
           },
           headers: {
@@ -389,7 +217,7 @@ async function handle_message(event) {
       try {
         const response = await axios.get(`${API_URL}/sumbymonth`, {
           params: {
-            userid: userid,
+            uname: userid,
             wallet_id: wallet.wallet_id,
           },
           headers: {
@@ -483,55 +311,47 @@ async function handle_message(event) {
         note = extracted.slice(1).join(" ");
       }
 
-      const sql_insert_with_param =
-        "INSERT INTO expense(UNAME,EXVALUE,FULLDATE,NOTE,WALLET_ID) VALUES (:uname,:val,TO_DATE(:targetdate, 'YYYY-MM-DD HH24:MI:SS'),:note,:WALLET_ID)";
-      const data_tuple1 = [
-        userid,
-        inst_from_user,
-        targetdate,
-        note,
-        parseInt(wallet.wallet_id),
-      ];
-      await connection.execute(sql_insert_with_param, data_tuple1);
+      try {
+        const response = await axios.post(
+          `${API_URL}/add`,
+          {
+            uname: userid,
+            wallet_id: wallet.wallet_id,
+            exvalue: inst_from_user,
+            targetdate: targetdate,
+            detail: note,
+          },
+          {
+            headers: {
+              "Content-Type": "application/json",
+              "x-api-key": API_KEY,
+            },
+          }
+        );
 
-      const res_message1 = await sumDay(
-        connection,
-        userid,
-        justdate,
-        wallet.wallet_id
-      );
+        let num_days = 0;
+        if (year_n_month === this_year_n_month) {
+          num_days = parseInt(localDatetime.toISOString().slice(8, 10));
+        } else {
+          const month_range = getMRange(year_n_month);
+          num_days = month_range[1];
+        }
 
-      const sql_select_with_param = getSqlQuery("sumthismonth", 0);
-      const data_tuple2 = [userid, wallet.wallet_id, year_n_month];
-      const records = await connection.execute(
-        sql_select_with_param,
-        data_tuple2
-      );
-      let num_days = 0;
-      if (year_n_month === this_year_n_month) {
-        num_days = parseInt(localDatetime.toISOString().slice(8, 10));
-      } else {
-        const month_range = getMRange(year_n_month);
-        num_days = month_range[1];
+        const res_message1 = `[${response.data.data.wallet_id}] Balance on ${response.data.data.targetdate} = ${response.data.data.sum_day}`;
+        let res_message2 = `\n\n**Expense Report This Month**\n`;
+        res_message2 += "Total = " + response.data.data.sum_month + "\n";
+        res_message2 +=
+          "Avg.  = " + (response.data.data.sum_month / num_days).toFixed(2);
+
+        res_message = res_message1 + res_message2;
+      } catch (error) {
+        console.error(error);
+        res_message = error.message;
       }
-
-      let res_message2 = `\n\n**Expense Report This Month**\n`;
-      res_message2 += "Total = " + records.rows[0][1] + "\n";
-      res_message2 += "Avg.  = " + (records.rows[0][1] / num_days).toFixed(2);
-      connection.commit();
-      res_message = res_message1 + res_message2;
     }
   } catch (err) {
     console.error(err);
     res_message = err;
-  } finally {
-    if (connection) {
-      try {
-        await connection.close();
-      } catch (err) {
-        console.error(err);
-      }
-    }
   }
 
   return res_message;
