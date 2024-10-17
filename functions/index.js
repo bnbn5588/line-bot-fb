@@ -163,16 +163,24 @@ async function handle_message(event) {
     let year_n_month = this_year_n_month;
 
     if (inst_from_user === "help") {
-      res_message =
-        "Available commands are listed below: \n\n" +
-        "1. {+,-}10000 [detail]: add expense or income which detail is an optional\n" +
-        "For example, -1200 taxi meter | +1000\n\n" +
-        "2. show {YYYY-[MM]-[DD]} [-n]: list transaction on specified date (MM,DD can be omitted)\n" +
-        "For example, show 2022-09 | show 2022-09-01\n\n" +
-        "3. sum {YYYY-[MM]-[DD]}: sum all expense on specified date (MM,DD can be omitted)\n" +
-        "For example, sum 2022 | sum 2022-08\n\n" +
-        "4. showall [-n]: show all transaction. include -n to ignore detail\n\n" +
-        "5. sumall: sum all expense from starting date";
+      try {
+        const response = await axios.get(`${API_URL}/help`, {
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": API_KEY,
+          },
+        });
+
+        let count = 1;
+        res_message = "";
+        for (const row of response.data.data.commands) {
+          const newrec = `${count}). ${row.name}\n- ${row.description}\n>> ${row.command}`;
+          res_message += newrec + "\n";
+          count = count + 1;
+        }
+      } catch (error) {
+        res_message = error.message;
+      }
     } else if (inst_from_user === "sumall") {
       try {
         const response = await axios.get(`${API_URL}/sumall`, {
@@ -363,7 +371,7 @@ async function handle_location(event) {
   const longitude = event.events[0].message.longitude;
   // Make a nearby search request to Google Places API
 
-  const apiKey = process.env.API_KEY;
+  const apiKey = process.env.G_API_KEY;
   const radius = 1000; // Radius in meters (adjust as needed)
   const type = "restaurant"; // Type of places you want to search for (e.g., restaurant, cafe, etc.)
   let nextPageToken = null; // Initialize nextPageToken to null
