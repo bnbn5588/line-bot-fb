@@ -112,7 +112,7 @@ async function handle_message(event) {
   let res_message = "-";
 
   try {
-    const msg_from_user = event.events[0].message.text;
+    const msg_from_user = event.events[0].message.text.trim();
     const userid = event.events[0].source.userId;
     let extracted = msg_from_user.split(" ");
     const inst_from_user = extracted[0].toLowerCase();
@@ -216,6 +216,43 @@ async function handle_message(event) {
         res_message = `[${wallet.wallet_id}] Total Monthly Expense \n`;
         for (const row of response.data.data.monthlyExpenses) {
           const newrec = `${row.month}: Expense = ${row.totalExpense}`;
+          res_message += newrec + "\n";
+        }
+      } catch (error) {
+        res_message = error.message;
+      }
+    } else if (inst_from_user === "sumbynote") {
+      try {
+        const params = {
+          uname: userid,
+          wallet_id: wallet.wallet_id,
+        };
+
+        if (extracted[1]) {
+          if (extracted[1] == "-m" && !extracted[2]) {
+            params.month = year_n_month;
+          } else if (extracted[1] == "-m" && extracted[2]) {
+            params.month = extracted[2];
+          } else {
+            res_message = "Invalid argument found";
+            return res_message;
+          }
+        }
+
+        const response = await axios.get(`${API_URL}/sumbynote`, {
+          params: params,
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": API_KEY,
+          },
+        });
+
+        if (!response.data.data) {
+          return "No data found";
+        }
+        res_message = `[${wallet.wallet_id}] Grouped Expenses \n`;
+        for (const row of response.data.data.groupedExpenses) {
+          const newrec = `${row.note} (${row.count}): ${row.totalExpense}`;
           res_message += newrec + "\n";
         }
       } catch (error) {
