@@ -17,10 +17,7 @@
     "axios": "^1.6.8",
     "dotenv": "^16.4.5",
     "firebase-functions": "^6.0.1",
-    "moment-timezone": "^0.5.33",
-    "oracledb": "^6.0",
-    "request": "^2.88.0",
-    "request-promise": "^4.2.6"
+    "moment-timezone": "^0.5.33"
   },
   "devDependencies": {
     "eslint": "^8.15.0",

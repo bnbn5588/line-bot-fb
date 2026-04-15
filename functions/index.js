@@ -32,7 +32,6 @@ const logger = require("firebase-functions/logger");
 // });
 
 const functions = require("firebase-functions/v1");
-const request = require("request-promise");
 const axios = require("axios"); // Import axios for making HTTP requests
 // Import the moment-timezone library to work with time zones
 const moment = require("moment-timezone");
@@ -541,19 +540,17 @@ async function fetchPlaceDetails(placeId, apiKey) {
 }
 
 const reply = (bodyResponse, responseText) => {
-  //console.log("responseText:", responseText);
-  return request({
-    method: "POST",
-    uri: `${LINE_MESSAGING_API}/reply`,
-    headers: LINE_HEADER,
-    body: JSON.stringify({
+  return axios.post(
+    `${LINE_MESSAGING_API}/reply`,
+    {
       replyToken: bodyResponse.events[0].replyToken,
       messages: [
         {
           type: "text",
-          text: responseText, // Use the response text received as an argument
+          text: responseText,
         },
       ],
-    }),
-  });
+    },
+    { headers: LINE_HEADER }
+  );
 };
