@@ -50,14 +50,24 @@ const LINE_HEADER = {
 };
 
 exports.LineBot = functions.https.onRequest(async (req, res) => {
-  const userId = req.body.events[0].source.userId;
+  // Bug 1: LINE sends an empty events array during webhook verification
+  if (!req.body.events || req.body.events.length === 0) {
+    res.status(200).send("OK");
+    return;
+  }
+
+  // Bug 2: Non-message events (follow, unfollow, postback) have no .message property
+  if (!req.body.events[0].message) {
+    res.status(200).send("Non-message event ignored");
+    return;
+  }
 
   try {
     if (req.body.events[0].message.type === "location") {
       const responseText = await handle_location(req.body);
       await reply(req.body, responseText);
     } else if (req.body.events[0].message.type === "text") {
-      const responseText = await handle_message(req.body, userId);
+      const responseText = await handle_message(req.body);
       await reply(req.body, responseText);
     } else {
       res.status(200).send("Event type not supported");
@@ -103,6 +113,7 @@ async function getWallet(userid) {
         timezone: String(wallet[2]),
       };
     }
+    return -1;
   } catch (error) {
     return -1;
   }
@@ -117,7 +128,7 @@ async function handle_message(event) {
     let extracted = msg_from_user.split(" ");
     const inst_from_user = extracted[0].toLowerCase();
 
-    console.log(inst_from_user);
+    console.log(inst_from_user, userid);
 
     // Create Wallet
     if (inst_from_user === "create") {
@@ -142,6 +153,7 @@ async function handle_message(event) {
         return res_message;
       } catch (error) {
         res_message = error.message;
+        return res_message;
       }
     }
 
@@ -276,7 +288,7 @@ async function handle_message(event) {
           const month_range = getMRange(row.month);
           const num_days =
             row.month === this_year_n_month
-              ? parseInt(localDatetime.toISOString().slice(8, 10))
+              ? localDatetime.date()
               : month_range[1];
           const newrec = `${row.month}: Avg. Expense = ${(
             row.totalExpense / num_days
@@ -376,7 +388,7 @@ async function handle_message(event) {
 
         let num_days = 0;
         if (year_n_month === this_year_n_month) {
-          num_days = parseInt(localDatetime.toISOString().slice(8, 10));
+          num_days = localDatetime.date();
         } else {
           const month_range = getMRange(year_n_month);
           num_days = month_range[1];
@@ -456,10 +468,16 @@ async function handle_location(event) {
       if (!nextPageToken) {
         break;
       }
+      // Google requires a short delay before the next_page_token becomes valid
+      await new Promise((resolve) => setTimeout(resolve, 2000));
     } catch (error) {
       console.error("Error fetching nearby places:", error);
       return "Error fetching nearby places. Please try again later.";
     }
+  }
+
+  if (places.length === 0) {
+    return "No open restaurants found nearby. Try sharing a different location.";
   }
 
   // Calculate total weight based on ratings
