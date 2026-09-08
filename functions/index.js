@@ -33,6 +33,7 @@ const logger = require("firebase-functions/logger");
 
 const functions = require("firebase-functions/v1");
 const axios = require("axios"); // Import axios for making HTTP requests
+const crypto = require("crypto"); // Built-in — used to verify the LINE signature
 // Import the moment-timezone library to work with time zones
 const moment = require("moment-timezone");
 
@@ -48,7 +49,43 @@ const LINE_HEADER = {
   Authorization: `Bearer ${process.env.LB_KEY}`,
 };
 
+const LINE_CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET;
+
+// /**
+//  * Verify the X-Line-Signature header so only LINE can invoke this webhook.
+//  * Fails open (with a loud log) only when the secret is not configured yet, so
+//  * an incomplete deploy does not take the bot down. Set LINE_CHANNEL_SECRET to
+//  * enforce it.
+//  */
+function isValidLineSignature(req) {
+  if (!LINE_CHANNEL_SECRET) {
+    console.error(
+      "LINE_CHANNEL_SECRET is not set — skipping signature verification. " +
+        "Set it in functions/.env (or Firebase Secret Manager) to secure the webhook.",
+    );
+    return true;
+  }
+  const signature = req.get("x-line-signature");
+  if (!signature || !req.rawBody) {
+    return false;
+  }
+  const expected = crypto
+    .createHmac("sha256", LINE_CHANNEL_SECRET)
+    .update(req.rawBody)
+    .digest("base64");
+  const a = Buffer.from(signature);
+  const b = Buffer.from(expected);
+  return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
 exports.LineBot = functions.https.onRequest(async (req, res) => {
+  // Reject anything that is not a signed request from LINE
+  if (!isValidLineSignature(req)) {
+    console.error("Invalid X-Line-Signature — rejecting request");
+    res.status(401).send("Invalid signature");
+    return;
+  }
+
   // Bug 1: LINE sends an empty events array during webhook verification
   if (!req.body.events || req.body.events.length === 0) {
     res.status(200).send("OK");
@@ -61,24 +98,38 @@ exports.LineBot = functions.https.onRequest(async (req, res) => {
     return;
   }
 
+  let responseText;
   try {
     if (req.body.events[0].message.type === "location") {
-      const responseText = await handle_location(req.body);
-      await reply(req.body, responseText);
+      responseText = await handle_location(req.body);
     } else if (req.body.events[0].message.type === "text") {
-      const responseText = await handle_message(req.body);
-      await reply(req.body, responseText);
+      responseText = await handle_message(req.body);
     } else {
       res.status(200).send("Event type not supported");
       return;
     }
-
-    // Send a success response to Line after processing
-    res.status(200).send("Message processed successfully");
   } catch (error) {
     console.error("Error processing message: ", error);
-    res.status(500).send("Error processing message");
+    // Return 200 so LINE does not redeliver the webhook. Redelivery would
+    // re-run non-idempotent work (e.g. a /add insert that already succeeded
+    // before a later step threw) and double-count transactions.
+    res.status(200).send("Message processing failed");
+    return;
   }
+
+  // A failed reply must not become a non-2xx response, for the same
+  // redelivery / double-write reason as above.
+  try {
+    await reply(req.body, responseText);
+  } catch (replyError) {
+    console.error(
+      "Error sending reply to LINE: ",
+      (replyError && replyError.response && replyError.response.data) ||
+        replyError,
+    );
+  }
+
+  res.status(200).send("Message processed successfully");
 });
 
 function getMRange(indate) {
@@ -144,7 +195,7 @@ async function handle_message(event) {
               "Content-Type": "application/json",
               "x-api-key": API_KEY,
             },
-          }
+          },
         );
         res_message =
           `[${response.data.data.wallet_id}] ${response.data.data.wallet_name} created successfully!\n` +
@@ -333,7 +384,7 @@ async function handle_message(event) {
               "Content-Type": "application/json",
               "x-api-key": API_KEY,
             },
-          }
+          },
         );
         if (response.data.message) {
           res_message = response.data.message;
@@ -349,7 +400,6 @@ async function handle_message(event) {
     ) {
       const get_date = msg_from_user.split("-d ");
       const get_hour = msg_from_user.split("-h ");
-      extracted = get_date[0].split(" ");
 
       if (get_date.length >= 2) {
         const extracted_date = get_date[1].split("-h")[0].trim();
@@ -362,9 +412,18 @@ async function handle_message(event) {
       }
 
       const targetdate = `${justdate} ${justhour}`;
-      let note = "";
-      if (extracted.length > 1) {
-        note = extracted.slice(1).join(" ");
+
+      // The note is everything after the amount. Strip the -d / -h flag
+      // segments first so they don't leak into the description.
+      const note_source = msg_from_user.split("-d ")[0].split("-h ")[0].trim();
+      extracted = note_source.split(" ");
+      const note = extracted.slice(1).join(" ").trim();
+
+      if (!note) {
+        return (
+          "A note is required. Add a short description after the amount.\n" +
+          "For example, '-120 lunch' or '+500 salary'"
+        );
       }
 
       try {
@@ -382,7 +441,7 @@ async function handle_message(event) {
               "Content-Type": "application/json",
               "x-api-key": API_KEY,
             },
-          }
+          },
         );
 
         let num_days = 0;
@@ -407,7 +466,8 @@ async function handle_message(event) {
     }
   } catch (err) {
     console.error(err);
-    res_message = err;
+    // Must stay a string — reply() sends this straight to LINE as message text.
+    res_message = (err && err.message) || String(err);
   }
 
   return res_message;
@@ -420,10 +480,15 @@ async function handle_location(event) {
   // Make a nearby search request to Google Places API
 
   const apiKey = process.env.G_API_KEY;
+  if (!apiKey) {
+    console.error("G_API_KEY is not set");
+    return "Location feature is not configured. Please contact the admin.";
+  }
   const radius = 1000; // Radius in meters (adjust as needed)
   const type = "restaurant"; // Type of places you want to search for (e.g., restaurant, cafe, etc.)
   let nextPageToken = null; // Initialize nextPageToken to null
-  const places = []; // Array to store all places
+  const places = []; // Open/confirmed places
+  const fallbackPlaces = []; // Operational places with no hours data
 
   // Loop until either we have retrieved 50 places or there are no more pages
   while (places.length < 50) {
@@ -447,17 +512,16 @@ async function handle_location(event) {
         const rating = place.rating;
         const opening_hours = place.opening_hours;
 
-        // Check if opening_hours is defined before accessing open_now
         const openNow = opening_hours && opening_hours.open_now;
 
-        if (
-          typeof openNow !== "undefined" &&
-          businessStatus === "OPERATIONAL"
-        ) {
-          // Create an object for each place containing place ID and rating
-          places.push({ placeId, rating });
-        } else {
-          console.log(`Place with ID ${placeId} is currently closed.`);
+        if (businessStatus === "OPERATIONAL") {
+          if (openNow === true) {
+            places.push({ placeId, rating });
+          } else if (openNow === undefined) {
+            // No hours data — keep as fallback in case all others are closed
+            fallbackPlaces.push({ placeId, rating });
+          }
+          // openNow === false means confirmed closed — skip entirely
         }
       }
 
@@ -475,8 +539,13 @@ async function handle_location(event) {
     }
   }
 
+  let usingFallback = false;
+  if (places.length === 0 && fallbackPlaces.length === 0) {
+    return "No restaurants found nearby. Try sharing a different location.";
+  }
   if (places.length === 0) {
-    return "No open restaurants found nearby. Try sharing a different location.";
+    places.push(...fallbackPlaces);
+    usingFallback = true;
   }
 
   // Calculate total weight based on ratings
@@ -514,8 +583,10 @@ async function handle_location(event) {
     // Construct Google Maps link using place details
     const googleMapsLink = placeDetails.googleMapsUri;
     const name = placeDetails.displayName.text;
-    // Prepare the response text with the Google Maps link and place name
-    const responseText = `Randomly selected place: ${name}\nGoogle Maps link: ${googleMapsLink}`;
+    const note = usingFallback
+      ? "\n(Hours unavailable — may not be open right now)"
+      : "";
+    const responseText = `Randomly selected place: ${name}\nGoogle Maps link: ${googleMapsLink}${note}`;
 
     // Return the response text containing the selected place and the Google Maps link
     return responseText;
@@ -529,13 +600,18 @@ async function handle_location(event) {
 async function fetchPlaceDetails(placeId, apiKey) {
   try {
     const response = await axios.get(
-      `https://places.googleapis.com/v1/places/${placeId}?fields=id,displayName,googleMapsUri&key=${apiKey}`
+      `https://places.googleapis.com/v1/places/${placeId}`,
+      {
+        headers: {
+          "X-Goog-Api-Key": apiKey,
+          "X-Goog-FieldMask": "id,displayName,googleMapsUri",
+        },
+      },
     );
-    //console.log(response)
-    return response.data; // Return place details
+    return response.data;
   } catch (error) {
     console.error("Error fetching place details:", error);
-    throw error; // Throw error for handling at the caller level
+    throw error;
   }
 }
 
@@ -551,6 +627,6 @@ const reply = (bodyResponse, responseText) => {
         },
       ],
     },
-    { headers: LINE_HEADER }
+    { headers: LINE_HEADER },
   );
 };
