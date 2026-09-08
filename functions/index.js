@@ -78,7 +78,10 @@ function isValidLineSignature(req) {
   return a.length === b.length && crypto.timingSafeEqual(a, b);
 }
 
-exports.LineBot = functions.https.onRequest(async (req, res) => {
+// Deployed to Singapore (asia-southeast1) — the closest GCP region to Thailand.
+exports.LineBot = functions
+  .region("asia-southeast1")
+  .https.onRequest(async (req, res) => {
   // Reject anything that is not a signed request from LINE
   if (!isValidLineSignature(req)) {
     console.error("Invalid X-Line-Signature — rejecting request");
