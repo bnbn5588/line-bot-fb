@@ -147,6 +147,64 @@ function getMRange(indate) {
   return mrange;
 }
 
+// Turn a failed backend call into a message that is safe to show the user,
+// instead of raw axios text like "Request failed with status code 404".
+function apiErrorMessage(error, notFoundMessage) {
+  const status = error && error.response && error.response.status;
+  const apiMessage =
+    error && error.response && error.response.data && error.response.data.message;
+  console.error(
+    "Backend API error:",
+    status || "no response",
+    apiMessage || (error && error.message),
+  );
+  if (status === 404) {
+    return notFoundMessage || "No data found in this wallet yet.";
+  }
+  if (status === 400 && apiMessage) {
+    return apiMessage;
+  }
+  return "Sorry, the service is temporarily unavailable. Please try again in a moment.";
+}
+
+// Parse an amount token such as "-120", "+1,500.50". Commas are only allowed
+// as thousands separators. Returns the number, or null when invalid
+// (previously "-1,000" was silently saved as -1 and "-120abc" as -120).
+function parseAmount(token) {
+  const pattern = /^[+-](\d{1,3}(,\d{3})+|\d+)(\.\d{1,2})?$/;
+  if (!pattern.test(token)) {
+    return null;
+  }
+  const value = Number(token.replace(/,/g, ""));
+  if (!Number.isFinite(value) || value === 0 || Math.abs(value) >= 1e7) {
+    return null;
+  }
+  return value;
+}
+
+const UNKNOWN_COMMAND_HINT = "Type 'help' to see all commands.";
+
+async function getHelpMessage() {
+  const response = await axios.get(`${API_URL}/help`, {
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": API_KEY,
+    },
+  });
+
+  let count = 1;
+  let message = "";
+  for (const row of response.data.data.commands) {
+    const newrec = `${count}). ${row.name}\n- ${row.description}\n>> ${row.command}`;
+    message += newrec + "\n";
+    count = count + 1;
+  }
+  return message;
+}
+
+// Returns the user's current wallet, or null if they have none.
+// Any other failure (backend down, timeout, 5xx) is thrown so the caller does
+// not mistake an outage for "no wallet" and prompt the user to create another.
 async function getWallet(userid) {
   try {
     const response = await axios.get(`${API_URL}/wallet`, {
@@ -166,9 +224,12 @@ async function getWallet(userid) {
         timezone: String(wallet[2]),
       };
     }
-    return -1;
+    return null;
   } catch (error) {
-    return -1;
+    if (error.response && error.response.status === 404) {
+      return null;
+    }
+    throw error;
   }
 }
 
@@ -185,6 +246,12 @@ async function handle_message(event) {
 
     // Create Wallet
     if (inst_from_user === "create") {
+      if (!extracted[1] || !extracted[2] || extracted.length > 3) {
+        return (
+          "Usage: create [wallet_name] [timezone]\n" +
+          "For example, 'create main Asia/Bangkok'"
+        );
+      }
       try {
         const response = await axios.post(
           `${API_URL}/createWallet`,
@@ -205,14 +272,27 @@ async function handle_message(event) {
           `[${response.data.data.wallet_id}] ${response.data.data.wallet_name} is your current wallet (${response.data.data.timezone})`;
         return res_message;
       } catch (error) {
-        res_message = error.message;
-        return res_message;
+        return apiErrorMessage(error);
       }
     }
 
-    const wallet = await getWallet(userid);
+    // Help does not need a wallet — new users must be able to see it.
+    if (inst_from_user === "help") {
+      try {
+        return await getHelpMessage();
+      } catch (error) {
+        return apiErrorMessage(error);
+      }
+    }
 
-    if (wallet == -1) {
+    let wallet;
+    try {
+      wallet = await getWallet(userid);
+    } catch (error) {
+      return apiErrorMessage(error);
+    }
+
+    if (!wallet) {
       res_message =
         "No wallet found, please create wallet\n\n" +
         "create [wallet_name] [timezone]\n" +
@@ -227,26 +307,7 @@ async function handle_message(event) {
     const this_year_n_month = localDatetime.format("YYYY-MM");
     let year_n_month = this_year_n_month;
 
-    if (inst_from_user === "help") {
-      try {
-        const response = await axios.get(`${API_URL}/help`, {
-          headers: {
-            "Content-Type": "application/json",
-            "x-api-key": API_KEY,
-          },
-        });
-
-        let count = 1;
-        res_message = "";
-        for (const row of response.data.data.commands) {
-          const newrec = `${count}). ${row.name}\n- ${row.description}\n>> ${row.command}`;
-          res_message += newrec + "\n";
-          count = count + 1;
-        }
-      } catch (error) {
-        res_message = error.message;
-      }
-    } else if (inst_from_user === "sumall") {
+    if (inst_from_user === "sumall") {
       try {
         const response = await axios.get(`${API_URL}/sumall`, {
           params: {
@@ -263,7 +324,7 @@ async function handle_message(event) {
         const record_fristdate = response.data.data.first_date;
         res_message = `[${wallet.wallet_id}] Total Expense: ${record_sum} starting from ${record_fristdate}`;
       } catch (error) {
-        res_message = error.message;
+        res_message = apiErrorMessage(error);
       }
     } else if (inst_from_user === "sumbymonth") {
       try {
@@ -284,7 +345,7 @@ async function handle_message(event) {
           res_message += newrec + "\n";
         }
       } catch (error) {
-        res_message = error.message;
+        res_message = apiErrorMessage(error);
       }
     } else if (inst_from_user === "sumbynote") {
       try {
@@ -321,7 +382,12 @@ async function handle_message(event) {
           res_message += newrec + "\n";
         }
       } catch (error) {
-        res_message = error.message;
+        res_message = apiErrorMessage(
+          error,
+          extracted[1] === "-m"
+            ? `No data found in this wallet for ${extracted[2] || year_n_month}.`
+            : undefined,
+        );
       }
     } else if (inst_from_user === "avgbymonth") {
       try {
@@ -349,7 +415,7 @@ async function handle_message(event) {
           res_message += newrec + "\n";
         }
       } catch (error) {
-        res_message = error.message;
+        res_message = apiErrorMessage(error);
       }
     } else if (inst_from_user === "wallet" && extracted.length == 1) {
       try {
@@ -372,7 +438,7 @@ async function handle_message(event) {
           res_message += newrec + "\n";
         }
       } catch (error) {
-        res_message = error.message;
+        res_message = apiErrorMessage(error);
       }
     } else if (inst_from_user === "wallet" && extracted.length == 2) {
       try {
@@ -395,23 +461,44 @@ async function handle_message(event) {
           res_message = `[${response.data.data.new_wallet_id}] ${response.data.data.new_wallet_name} is your current wallet (${response.data.data.new_wallet_tz})`;
         }
       } catch (error) {
-        res_message = error.message;
+        res_message = apiErrorMessage(error);
       }
     } else if (
       inst_from_user.startsWith("+") ||
       inst_from_user.startsWith("-")
     ) {
+      const amount = parseAmount(inst_from_user);
+      if (amount === null) {
+        return (
+          `Invalid amount '${extracted[0]}'.\n` +
+          "Use '-' for expense or '+' for income, e.g. '-120 lunch' or '+1,500.50 salary'"
+        );
+      }
+
       const get_date = msg_from_user.split("-d ");
       const get_hour = msg_from_user.split("-h ");
 
       if (get_date.length >= 2) {
         const extracted_date = get_date[1].split("-h")[0].trim();
+        if (
+          !/^\d{4}-\d{2}-\d{2}$/.test(extracted_date) ||
+          !moment(extracted_date, "YYYY-MM-DD", true).isValid()
+        ) {
+          return `Invalid date '${extracted_date}'. Use YYYY-MM-DD, e.g. -d 2026-03-15`;
+        }
         justdate = extracted_date;
         year_n_month = extracted_date.slice(0, 7);
       }
       if (get_hour.length >= 2) {
         const extracted_hour = get_hour[1].split("-d")[0].trim();
-        justhour = extracted_hour;
+        // Accept HH:mm as well as HH:mm:ss (the API needs seconds)
+        const hourMatch = /^([01]\d|2[0-3]):([0-5]\d)(:([0-5]\d))?$/.exec(
+          extracted_hour,
+        );
+        if (!hourMatch) {
+          return `Invalid time '${extracted_hour}'. Use HH:mm, e.g. -h 14:30`;
+        }
+        justhour = `${hourMatch[1]}:${hourMatch[2]}:${hourMatch[4] || "00"}`;
       }
 
       const targetdate = `${justdate} ${justhour}`;
@@ -435,7 +522,7 @@ async function handle_message(event) {
           {
             uname: userid,
             wallet_id: wallet.wallet_id,
-            exvalue: inst_from_user,
+            exvalue: String(amount),
             targetdate: targetdate,
             detail: note,
           },
@@ -463,14 +550,15 @@ async function handle_message(event) {
 
         res_message = res_message1 + res_message2;
       } catch (error) {
-        console.error(error);
-        res_message = error.message;
+        res_message = apiErrorMessage(error);
       }
+    } else {
+      res_message = `Unknown command '${extracted[0]}'. ${UNKNOWN_COMMAND_HINT}`;
     }
   } catch (err) {
     console.error(err);
     // Must stay a string — reply() sends this straight to LINE as message text.
-    res_message = (err && err.message) || String(err);
+    res_message = "Sorry, something went wrong. Please try again.";
   }
 
   return res_message;
@@ -551,17 +639,24 @@ async function handle_location(event) {
     usingFallback = true;
   }
 
-  // Calculate total weight based on ratings
-  const totalWeight = places.reduce((acc, place) => acc + place.rating, 0);
+  // Weight by rating. Places with no rating (common for small/new restaurants)
+  // get a neutral weight — an undefined rating used to make totalWeight NaN,
+  // so nothing was ever selected and the user got an error.
+  const UNRATED_WEIGHT = 2.5;
+  const weightOf = (place) =>
+    typeof place.rating === "number" && place.rating > 0
+      ? place.rating
+      : UNRATED_WEIGHT;
+  const totalWeight = places.reduce((acc, place) => acc + weightOf(place), 0);
 
   // Generate a random number between 0 and the total weight
   const randomWeight = Math.random() * totalWeight;
 
   // Iterate over places and find the randomly selected place
   let cumulativeWeight = 0;
-  let selectedPlace;
+  let selectedPlace = places[places.length - 1]; // guard against float rounding
   for (const place of places) {
-    cumulativeWeight += place.rating;
+    cumulativeWeight += weightOf(place);
     if (cumulativeWeight >= randomWeight) {
       selectedPlace = place;
       break;
