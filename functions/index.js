@@ -89,41 +89,47 @@ exports.LineBot = functions
     return;
   }
 
-  // Bug 1: LINE sends an empty events array during webhook verification
-  if (!req.body.events || req.body.events.length === 0) {
-    res.status(200).send("OK");
+  // LINE sends an empty events array during webhook verification
+  const events = (req.body && req.body.events) || [];
+
+  // A single webhook can carry several events (e.g. messages sent in quick
+  // succession). Handle them all, in order — previously only events[0] was
+  // processed and the rest were silently dropped.
+  for (const ev of events) {
+    await handleEvent(ev);
+  }
+
+  // Always 200 so LINE does not redeliver the webhook. Redelivery would re-run
+  // non-idempotent work (e.g. a /add insert that already succeeded) and
+  // double-count transactions.
+  res.status(200).send("OK");
+});
+
+async function handleEvent(ev) {
+  // Non-message events (follow, unfollow, postback) have no .message property
+  if (ev.type !== "message" || !ev.message || !ev.replyToken) {
     return;
   }
 
-  // Bug 2: Non-message events (follow, unfollow, postback) have no .message property
-  if (!req.body.events[0].message) {
-    res.status(200).send("Non-message event ignored");
-    return;
-  }
+  // The handlers read event.events[0]; wrap this event in that shape.
+  const single = { events: [ev] };
 
   let responseText;
   try {
-    if (req.body.events[0].message.type === "location") {
-      responseText = await handle_location(req.body);
-    } else if (req.body.events[0].message.type === "text") {
-      responseText = await handle_message(req.body);
+    if (ev.message.type === "location") {
+      responseText = await handle_location(single);
+    } else if (ev.message.type === "text") {
+      responseText = await handle_message(single);
     } else {
-      res.status(200).send("Event type not supported");
-      return;
+      return; // sticker, image, ... — not supported
     }
   } catch (error) {
     console.error("Error processing message: ", error);
-    // Return 200 so LINE does not redeliver the webhook. Redelivery would
-    // re-run non-idempotent work (e.g. a /add insert that already succeeded
-    // before a later step threw) and double-count transactions.
-    res.status(200).send("Message processing failed");
     return;
   }
 
-  // A failed reply must not become a non-2xx response, for the same
-  // redelivery / double-write reason as above.
   try {
-    await reply(req.body, responseText);
+    await reply(single, responseText);
   } catch (replyError) {
     console.error(
       "Error sending reply to LINE: ",
@@ -131,9 +137,7 @@ exports.LineBot = functions
         replyError,
     );
   }
-
-  res.status(200).send("Message processed successfully");
-});
+}
 
 function getMRange(indate) {
   const splited = indate.split("-");
@@ -322,7 +326,7 @@ async function handle_message(event) {
 
         const record_sum = response.data.data.total_balance;
         const record_fristdate = response.data.data.first_date;
-        res_message = `[${wallet.wallet_id}] Total Expense: ${record_sum} starting from ${record_fristdate}`;
+        res_message = `[${wallet.wallet_id}] Balance (income + expenses): ${record_sum} since ${record_fristdate}`;
       } catch (error) {
         res_message = apiErrorMessage(error);
       }
@@ -339,9 +343,9 @@ async function handle_message(event) {
           },
         });
 
-        res_message = `[${wallet.wallet_id}] Total Monthly Expense \n`;
+        res_message = `[${wallet.wallet_id}] Monthly Balance (income + expenses)\n`;
         for (const row of response.data.data.monthlyExpenses) {
-          const newrec = `${row.month}: Expense = ${row.totalExpense}`;
+          const newrec = `${row.month}: ${row.totalExpense}`;
           res_message += newrec + "\n";
         }
       } catch (error) {
@@ -376,7 +380,7 @@ async function handle_message(event) {
         if (!response.data.data) {
           return "No data found";
         }
-        res_message = `[${wallet.wallet_id}] Grouped Expenses \n`;
+        res_message = `[${wallet.wallet_id}] Total by Note\n`;
         for (const row of response.data.data.groupedExpenses) {
           const newrec = `${row.note} (${row.count}): ${row.totalExpense}`;
           res_message += newrec + "\n";
@@ -402,14 +406,14 @@ async function handle_message(event) {
           },
         });
 
-        res_message = `[${wallet.wallet_id}] Average Daily Expense \n`;
+        res_message = `[${wallet.wallet_id}] Average Daily Balance (income + expenses)\n`;
         for (const row of response.data.data.monthlyExpenses) {
           const month_range = getMRange(row.month);
           const num_days =
             row.month === this_year_n_month
               ? localDatetime.date()
               : month_range[1];
-          const newrec = `${row.month}: Avg. Expense = ${(
+          const newrec = `${row.month}: ${(
             row.totalExpense / num_days
           ).toFixed(2)}`;
           res_message += newrec + "\n";
@@ -543,10 +547,10 @@ async function handle_message(event) {
         }
 
         const res_message1 = `[${response.data.data.wallet_id}] Balance on ${response.data.data.targetdate} = ${response.data.data.sum_day}`;
-        let res_message2 = `\n\n**Expense Report This Month**\n`;
+        let res_message2 = `\n\n**This Month (income + expenses)**\n`;
         res_message2 += "Total = " + response.data.data.sum_month + "\n";
         res_message2 +=
-          "Avg.  = " + (response.data.data.sum_month / num_days).toFixed(2);
+          "Avg./day = " + (response.data.data.sum_month / num_days).toFixed(2);
 
         res_message = res_message1 + res_message2;
       } catch (error) {
@@ -713,17 +717,48 @@ async function fetchPlaceDetails(placeId, apiKey) {
   }
 }
 
+// LINE rejects the whole reply if any text message is over 5000 characters,
+// and a reply may hold at most 5 messages. Split long text on line breaks.
+const LINE_MAX_TEXT = 5000;
+const LINE_MAX_MESSAGES = 5;
+
+function splitForLine(text) {
+  const chunks = [];
+  let current = "";
+  for (const line of String(text).split("\n")) {
+    // A single line longer than the limit is hard-cut
+    for (let i = 0; i < Math.max(line.length, 1); i += LINE_MAX_TEXT) {
+      const piece = line.slice(i, i + LINE_MAX_TEXT);
+      const candidate = current === "" ? piece : current + "\n" + piece;
+      if (candidate.length > LINE_MAX_TEXT) {
+        chunks.push(current);
+        current = piece;
+      } else {
+        current = candidate;
+      }
+    }
+  }
+  chunks.push(current);
+
+  if (chunks.length > LINE_MAX_MESSAGES) {
+    const kept = chunks.slice(0, LINE_MAX_MESSAGES);
+    const note = "\n… (truncated — too long for LINE)";
+    kept[LINE_MAX_MESSAGES - 1] =
+      kept[LINE_MAX_MESSAGES - 1].slice(0, LINE_MAX_TEXT - note.length) + note;
+    return kept;
+  }
+  return chunks.map((c) => (c === "" ? "-" : c));
+}
+
 const reply = (bodyResponse, responseText) => {
   return axios.post(
     `${LINE_MESSAGING_API}/reply`,
     {
       replyToken: bodyResponse.events[0].replyToken,
-      messages: [
-        {
-          type: "text",
-          text: responseText,
-        },
-      ],
+      messages: splitForLine(responseText).map((text) => ({
+        type: "text",
+        text,
+      })),
     },
     { headers: LINE_HEADER },
   );
