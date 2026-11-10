@@ -199,10 +199,14 @@ function parseAmount(token) {
   return value;
 }
 
-const UNKNOWN_COMMAND_HINT = "Type 'help' to see all commands.";
+const UNKNOWN_COMMAND_HINT = "Type 'help' to see all commands (ภาษาไทย: พิมพ์ 'ช่วยเหลือ').";
 
-async function getHelpMessage() {
+// Words that show the help text, and its language
+const HELP_WORDS = { help: "en", "ช่วยเหลือ": "th", "วิธีใช้": "th", "คำสั่ง": "th" };
+
+async function getHelpMessage(lang = "en") {
   const response = await axios.get(`${API_URL}/help`, {
+    params: { lang },
     headers: {
       "Content-Type": "application/json",
       "x-api-key": API_KEY,
@@ -210,7 +214,9 @@ async function getHelpMessage() {
   });
 
   let count = 1;
-  let message = "";
+  let message = lang === "th"
+    ? "📖 วิธีใช้งาน (English: type 'help')\n\n"
+    : "📖 How to use (ภาษาไทย: พิมพ์ 'ช่วยเหลือ')\n\n";
   for (const row of response.data.data.commands) {
     const newrec = `${count}). ${row.name}\n- ${row.description}\n>> ${row.command}`;
     message += newrec + "\n";
@@ -296,9 +302,9 @@ async function handle_message(event) {
     }
 
     // Help does not need a wallet — new users must be able to see it.
-    if (inst_from_user === "help") {
+    if (Object.hasOwn(HELP_WORDS, inst_from_user)) {
       try {
-        return await getHelpMessage();
+        return await getHelpMessage(HELP_WORDS[inst_from_user]);
       } catch (error) {
         return apiErrorMessage(error);
       }
@@ -805,7 +811,7 @@ function defaultQuickReply() {
       msg("👛 กระเป๋า", "wallet"),
       { type: "action", action: { type: "uri", label: "🌐 เปิดเว็บ", uri: LIFF_URL } },
       { type: "action", action: { type: "location", label: "📍 สุ่มร้านอาหาร" } },
-      msg("❓ คำสั่ง", "help"),
+      msg("❓ วิธีใช้", "ช่วยเหลือ"),
     ],
   };
 }
