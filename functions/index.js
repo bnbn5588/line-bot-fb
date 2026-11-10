@@ -51,19 +51,12 @@ const LINE_HEADER = {
 
 const LINE_CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET;
 
-// /**
-//  * Verify the X-Line-Signature header so only LINE can invoke this webhook.
-//  * Fails open (with a loud log) only when the secret is not configured yet, so
-//  * an incomplete deploy does not take the bot down. Set LINE_CHANNEL_SECRET to
-//  * enforce it.
-//  */
+// Verify the X-Line-Signature header so only LINE can invoke this webhook.
+// Fails closed: without LINE_CHANNEL_SECRET every request is rejected.
 function isValidLineSignature(req) {
   if (!LINE_CHANNEL_SECRET) {
-    console.error(
-      "LINE_CHANNEL_SECRET is not set — skipping signature verification. " +
-        "Set it in functions/.env (or Firebase Secret Manager) to secure the webhook.",
-    );
-    return true;
+    console.error("LINE_CHANNEL_SECRET is not set — rejecting all webhook requests.");
+    return false;
   }
   const signature = req.get("x-line-signature");
   if (!signature || !req.rawBody) {
@@ -76,6 +69,18 @@ function isValidLineSignature(req) {
   const a = Buffer.from(signature);
   const b = Buffer.from(expected);
   return a.length === b.length && crypto.timingSafeEqual(a, b);
+}
+
+// Log an error without the request config: axios errors carry the URL (the
+// Places URL contains G_API_KEY) and headers (LINE token, backend API key).
+function safeError(error) {
+  if (!error) return error;
+  const status = error.response && error.response.status;
+  const code = error.code;
+  const apiMessage =
+    error.response && error.response.data &&
+    (error.response.data.message || error.response.data.error_message || error.response.data.status);
+  return [error.name, code, status, apiMessage || error.message].filter(Boolean).join(" | ");
 }
 
 // Deployed to Singapore (asia-southeast1) — the closest GCP region to Thailand.
@@ -124,7 +129,7 @@ async function handleEvent(ev) {
       return; // sticker, image, ... — not supported
     }
   } catch (error) {
-    console.error("Error processing message: ", error);
+    console.error("Error processing message:", safeError(error));
     return;
   }
 
@@ -133,8 +138,7 @@ async function handleEvent(ev) {
   } catch (replyError) {
     console.error(
       "Error sending reply to LINE: ",
-      (replyError && replyError.response && replyError.response.data) ||
-        replyError,
+      safeError(replyError),
     );
   }
 }
@@ -246,7 +250,9 @@ async function handle_message(event) {
     let extracted = msg_from_user.split(" ");
     const inst_from_user = extracted[0].toLowerCase();
 
-    console.log(inst_from_user, userid);
+    // Log the command, not the user's text (amounts and notes are personal data)
+    const cmd = /^[+-]/.test(inst_from_user) ? "add" : inst_from_user.slice(0, 20);
+    console.log("command:", cmd, "user:", "…" + String(userid).slice(-6));
 
     // Create Wallet
     if (inst_from_user === "create") {
@@ -560,7 +566,7 @@ async function handle_message(event) {
       res_message = `Unknown command '${extracted[0]}'. ${UNKNOWN_COMMAND_HINT}`;
     }
   } catch (err) {
-    console.error(err);
+    console.error("handle_message failed:", safeError(err));
     // Must stay a string — reply() sends this straight to LINE as message text.
     res_message = "Sorry, something went wrong. Please try again.";
   }
@@ -629,7 +635,7 @@ async function handle_location(event) {
       // Google requires a short delay before the next_page_token becomes valid
       await new Promise((resolve) => setTimeout(resolve, 2000));
     } catch (error) {
-      console.error("Error fetching nearby places:", error);
+      console.error("Error fetching nearby places:", safeError(error));
       return "Error fetching nearby places. Please try again later.";
     }
   }
@@ -668,7 +674,7 @@ async function handle_location(event) {
   }
 
   // Print the selected place
-  console.log("Randomly selected place:", selectedPlace);
+  console.log("Randomly selected place:", selectedPlace && selectedPlace.name);
   /*
     // Process the places or build a response text
     let responseText = `Nearby places for user`;
@@ -712,7 +718,7 @@ async function fetchPlaceDetails(placeId, apiKey) {
     );
     return response.data;
   } catch (error) {
-    console.error("Error fetching place details:", error);
+    console.error("Error fetching place details:", safeError(error));
     throw error;
   }
 }
