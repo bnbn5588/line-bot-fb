@@ -51,6 +51,9 @@ const LINE_HEADER = {
 
 const LINE_CHANNEL_SECRET = process.env.LINE_CHANNEL_SECRET;
 
+// The LIFF web app (not secret). Card "แก้ไข" buttons open LIFF_URL?edit=<id>.
+const LIFF_URL = process.env.LIFF_URL || "https://liff.line.me/2012532003-r80iatKj";
+
 // Verify the X-Line-Signature header so only LINE can invoke this webhook.
 // Fails closed: without LINE_CHANNEL_SECRET every request is rejected.
 function isValidLineSignature(req) {
@@ -111,8 +114,12 @@ exports.LineBot = functions
 });
 
 async function handleEvent(ev) {
-  // Non-message events (follow, unfollow, postback) have no .message property
-  if (ev.type !== "message" || !ev.message || !ev.replyToken) {
+  if (!ev.replyToken) {
+    return;
+  }
+  const isPostback = ev.type === "postback" && ev.postback;
+  // Other non-message events (follow, unfollow, ...) are ignored
+  if (!isPostback && (ev.type !== "message" || !ev.message)) {
     return;
   }
 
@@ -121,7 +128,9 @@ async function handleEvent(ev) {
 
   let responseText;
   try {
-    if (ev.message.type === "location") {
+    if (isPostback) {
+      responseText = await handle_postback(ev);
+    } else if (ev.message.type === "location") {
       responseText = await handle_location(single);
     } else if (ev.message.type === "text") {
       responseText = await handle_message(single);
@@ -552,13 +561,19 @@ async function handle_message(event) {
           num_days = month_range[1];
         }
 
-        const res_message1 = `[${response.data.data.wallet_id}] Balance on ${response.data.data.targetdate} = ${response.data.data.sum_day}`;
-        let res_message2 = `\n\n**This Month (income + expenses)**\n`;
-        res_message2 += "Total = " + response.data.data.sum_month + "\n";
-        res_message2 +=
-          "Avg./day = " + (response.data.data.sum_month / num_days).toFixed(2);
-
-        res_message = res_message1 + res_message2;
+        const d = response.data.data;
+        if (d.id && d.category) {
+          // New backend: reply with a card that has category / edit / delete buttons
+          res_message = {
+            messages: [recordCard(d, { wallet, time: justhour, avg: d.sum_month / num_days })],
+          };
+        } else {
+          const res_message1 = `[${d.wallet_id}] Balance on ${d.targetdate} = ${d.sum_day}`;
+          let res_message2 = `\n\n**This Month (income + expenses)**\n`;
+          res_message2 += "Total = " + d.sum_month + "\n";
+          res_message2 += "Avg./day = " + (d.sum_month / num_days).toFixed(2);
+          res_message = res_message1 + res_message2;
+        }
       } catch (error) {
         res_message = apiErrorMessage(error);
       }
@@ -756,16 +771,185 @@ function splitForLine(text) {
   return chunks.map((c) => (c === "" ? "-" : c));
 }
 
-const reply = (bodyResponse, responseText) => {
+// response: a string (sent as text, split if long) or { messages: [...],
+// quickReply? }. The quick-reply buttons go on the last message.
+const reply = (bodyResponse, response) => {
+  const messages =
+    response && typeof response === "object" && Array.isArray(response.messages)
+      ? response.messages.slice(0, LINE_MAX_MESSAGES)
+      : splitForLine(response).map((text) => ({ type: "text", text }));
+  const qr = (response && response.quickReply) || defaultQuickReply();
+  if (qr && messages.length) {
+    messages[messages.length - 1] = { ...messages[messages.length - 1], quickReply: qr };
+  }
   return axios.post(
     `${LINE_MESSAGING_API}/reply`,
     {
       replyToken: bodyResponse.events[0].replyToken,
-      messages: splitForLine(responseText).map((text) => ({
-        type: "text",
-        text,
-      })),
+      messages,
     },
     { headers: LINE_HEADER },
   );
 };
+
+// ---------- chat UI: quick reply, record card, postback buttons
+
+// Shortcut buttons above the keyboard (shown under the bot's latest reply).
+function defaultQuickReply() {
+  const msg = (label, text) => ({ type: "action", action: { type: "message", label, text } });
+  return {
+    items: [
+      msg("📊 ยอดรวม", "sumall"),
+      msg("📅 รายเดือน", "sumbymonth"),
+      msg("🏷️ โน้ตเดือนนี้", "sumbynote -m"),
+      msg("👛 กระเป๋า", "wallet"),
+      { type: "action", action: { type: "uri", label: "🌐 เปิดเว็บ", uri: LIFF_URL } },
+      { type: "action", action: { type: "location", label: "📍 สุ่มร้านอาหาร" } },
+      msg("❓ คำสั่ง", "help"),
+    ],
+  };
+}
+
+const fmtMoney = (v, signed = true) => {
+  const n = Number(v) || 0;
+  const s = Math.abs(n).toLocaleString("en-US", { maximumFractionDigits: 2 });
+  return n < 0 ? "−" + s : (signed && n > 0 ? "+" : "") + s;
+};
+// LINE limits: label 20 chars, postback data 300 chars, text 2000 in a flex text
+const clip = (t, n) => (String(t).length > n ? String(t).slice(0, n - 1) + "…" : String(t));
+
+function kv(label, value) {
+  return {
+    type: "box", layout: "horizontal", contents: [
+      { type: "text", text: label, size: "sm", color: "#77766f", flex: 0 },
+      { type: "text", text: value, size: "sm", color: "#0b0b0b", align: "end" },
+    ],
+  };
+}
+
+// Card shown after a record is saved.
+function recordCard(d, { wallet, time, avg }) {
+  const cat = d.category;
+  const isIncome = Number(d.exvalue) > 0;
+  const kind = isIncome ? "i" : "e";
+  const walletName = wallet && wallet.wallet_name ? `[${wallet.wallet_id}] ${wallet.wallet_name}` : `[${d.wallet_id}]`;
+  return {
+    type: "flex",
+    altText: clip(`บันทึก ${fmtMoney(d.exvalue)} ${d.detail} (${cat.icon} ${cat.label})`, 400),
+    contents: {
+      type: "bubble",
+      size: "kilo",
+      body: {
+        type: "box", layout: "vertical", spacing: "sm", paddingAll: "16px",
+        contents: [
+          { type: "text", text: `${cat.icon} ${cat.label}`, size: "xs", color: "#52514e" },
+          { type: "text", text: clip(d.detail, 200), weight: "bold", size: "md", wrap: true, color: "#0b0b0b" },
+          { type: "text", text: fmtMoney(d.exvalue), weight: "bold", size: "xxl", color: isIncome ? "#256abf" : "#d03b3b" },
+          { type: "separator", margin: "md" },
+          { type: "box", layout: "vertical", spacing: "xs", margin: "md", contents: [
+            kv("วันที่", `${d.targetdate} ${String(time || "").slice(0, 5)}`.trim()),
+            kv("ยอดวันนี้", fmtMoney(d.sum_day)),
+            kv("ยอดเดือนนี้", fmtMoney(d.sum_month)),
+            kv("เฉลี่ย/วัน", Number.isFinite(avg) ? fmtMoney(avg.toFixed(2)) : "-"),
+            kv("กระเป๋า", clip(walletName, 40)),
+          ] },
+        ],
+      },
+      footer: {
+        type: "box", layout: "horizontal", spacing: "sm", paddingAll: "8px",
+        contents: [
+          { type: "button", style: "secondary", height: "sm",
+            action: { type: "postback", label: "เปลี่ยนหมวด", data: `a=cat&id=${d.id}&k=${kind}` } },
+          { type: "button", style: "secondary", height: "sm",
+            action: { type: "uri", label: "แก้ไข", uri: `${LIFF_URL}?edit=${d.id}` } },
+          { type: "button", style: "secondary", height: "sm", color: "#f6d5d5",
+            action: { type: "postback", label: "ลบ", data: `a=del&id=${d.id}`, displayText: "ลบรายการนี้" } },
+        ],
+      },
+    },
+  };
+}
+
+let categoryCache = null;
+async function getCategories() {
+  if (categoryCache) return categoryCache;
+  const r = await axios.get(`${API_URL}/categories`, { headers: { "x-api-key": API_KEY } });
+  categoryCache = r.data.data;
+  return categoryCache;
+}
+
+// Buttons on the card. Who pressed it comes from the signed event, so a
+// forwarded or old card can never touch someone else's record (the backend
+// also checks that the record belongs to this user).
+async function handle_postback(ev) {
+  const userid = ev.source && ev.source.userId;
+  const p = new URLSearchParams(String(ev.postback.data || ""));
+  const action = p.get("a");
+  const id = p.get("id");
+  if (!userid || !/^\d{1,15}$/.test(id || "")) {
+    return "This button is no longer valid.";
+  }
+  const headers = { "Content-Type": "application/json", "x-api-key": API_KEY };
+  console.log("postback:", action, "user:", "…" + String(userid).slice(-6));
+
+  try {
+    if (action === "cat") {
+      const kind = p.get("k") === "i" ? "income" : "expense";
+      const cats = (await getCategories()).filter((c) => c.kind === kind).slice(0, 13);
+      return {
+        messages: [{ type: "text", text: "เลือกหมวดใหม่สำหรับรายการนี้ 👇" }],
+        quickReply: {
+          items: cats.map((c) => ({
+            type: "action",
+            action: {
+              type: "postback",
+              label: clip(`${c.icon} ${c.label}`, 20),
+              data: `a=setcat&id=${id}&c=${c.key}`,
+              displayText: `หมวด: ${c.icon} ${c.label}`,
+            },
+          })),
+        },
+      };
+    }
+
+    if (action === "setcat") {
+      const r = await axios.post(`${API_URL}/setCategory`, { uname: userid, id, category: p.get("c") }, { headers });
+      const d = r.data.data;
+      return `✅ เปลี่ยนหมวดเป็น ${d.category.icon} ${d.category.label} แล้ว\n"${clip(d.note, 60)}" ครั้งต่อไปจะใช้หมวดนี้ให้อัตโนมัติ`;
+    }
+
+    if (action === "del") {
+      return {
+        messages: [{
+          type: "template",
+          altText: "ยืนยันการลบรายการ",
+          template: {
+            type: "confirm",
+            text: "ลบรายการนี้ใช่ไหม? ลบแล้วกู้คืนไม่ได้",
+            actions: [
+              { type: "postback", label: "ลบ", data: `a=delok&id=${id}`, displayText: "ยืนยันลบ" },
+              { type: "postback", label: "ยกเลิก", data: `a=cancel&id=${id}`, displayText: "ยกเลิก" },
+            ],
+          },
+        }],
+      };
+    }
+
+    if (action === "delok") {
+      const r = await axios.post(`${API_URL}/deleteRecord`, { uname: userid, id }, { headers });
+      const d = r.data.data;
+      return `🗑️ ลบแล้ว: ${fmtMoney(d.exvalue)} ${clip(d.note, 60)} (${d.datetime})`;
+    }
+
+    if (action === "cancel") {
+      return "ไม่ได้ลบ 👍";
+    }
+  } catch (error) {
+    const status = error && error.response && error.response.status;
+    if (status === 404) {
+      return "ไม่พบรายการนี้แล้ว (อาจถูกลบไปแล้ว)";
+    }
+    return apiErrorMessage(error);
+  }
+  return "This button is no longer valid.";
+}
