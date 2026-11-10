@@ -855,15 +855,18 @@ function recordCard(d, { wallet, time, avg }) {
           ] },
         ],
       },
+      // Two rows: three buttons side by side are too narrow for Thai labels
       footer: {
-        type: "box", layout: "horizontal", spacing: "sm", paddingAll: "8px",
+        type: "box", layout: "vertical", spacing: "sm", paddingAll: "8px",
         contents: [
           { type: "button", style: "secondary", height: "sm",
-            action: { type: "postback", label: "เปลี่ยนหมวด", data: `a=cat&id=${d.id}&k=${kind}` } },
-          { type: "button", style: "secondary", height: "sm",
-            action: { type: "uri", label: "แก้ไข", uri: `${LIFF_URL}?edit=${d.id}` } },
-          { type: "button", style: "secondary", height: "sm", color: "#f6d5d5",
-            action: { type: "postback", label: "ลบ", data: `a=del&id=${d.id}`, displayText: "ลบรายการนี้" } },
+            action: { type: "postback", label: "🏷️ เปลี่ยนหมวด", data: `a=cat&id=${d.id}&k=${kind}` } },
+          { type: "box", layout: "horizontal", spacing: "sm", contents: [
+            { type: "button", style: "secondary", height: "sm",
+              action: { type: "uri", label: "✏️ แก้ไข", uri: `${LIFF_URL}?edit=${d.id}` } },
+            { type: "button", style: "secondary", height: "sm", color: "#f6d5d5",
+              action: { type: "postback", label: "🗑️ ลบ", data: `a=del&id=${d.id}`, displayText: "ลบรายการนี้" } },
+          ] },
         ],
       },
     },
