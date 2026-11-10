@@ -303,6 +303,10 @@ async function handle_message(event) {
 
     // Help does not need a wallet — new users must be able to see it.
     if (Object.hasOwn(HELP_WORDS, inst_from_user)) {
+      // "help text" / "ช่วยเหลือ ข้อความ" still gives the plain-text version
+      if (extracted.length === 1) {
+        return { messages: [helpCarousel(HELP_WORDS[inst_from_user])] };
+      }
       try {
         return await getHelpMessage(HELP_WORDS[inst_from_user]);
       } catch (error) {
@@ -877,6 +881,114 @@ function recordCard(d, { wallet, time, avg }) {
       },
     },
   };
+}
+
+// ---------- help as a carousel of small cards (one topic per card)
+const HELP_TEXT = {
+  th: {
+    eg: "เช่น",
+    alt: "วิธีใช้งาน: บันทึก -120 ข้าว / +500 เงินเดือน, ดูยอดด้วย sumall / sumbymonth, กดปุ่มบนการ์ดเพื่อเปลี่ยนหมวด แก้ไข ลบ",
+    add: { title: "✍️ บันทึกรายการ", rows: [
+      ["-จำนวน โน้ต", "รายจ่าย", "-120 ข้าวเที่ยง"],
+      ["+จำนวน โน้ต", "รายรับ", "+30000 เงินเดือน"],
+      ["#หมวด", "เลือกหมวดเอง (ไม่ใส่ก็ได้)", "-60 กาแฟ #เครื่องดื่ม"],
+      ["-d / -h", "ระบุวันที่ / เวลา", "-80 ข้าว -d 2026-11-01 -h 12:30"],
+    ], note: "ใส่ลูกน้ำได้ เช่น -1,500 และทศนิยมได้ 2 ตำแหน่ง" },
+    card: { title: "🏷️ หมวดและการ์ด", lines: [
+      "ระบบเลือกหมวดให้อัตโนมัติจากโน้ต เช่น กาแฟ → ☕ เครื่องดื่ม",
+      "หลังบันทึกจะได้การ์ดสรุป พร้อมปุ่ม:",
+      "🏷️ เปลี่ยนหมวด — ระบบจะจำไว้ใช้กับโน้ตเดิมครั้งต่อไป",
+      "✏️ แก้ไข — เปิดหน้าเว็บที่รายการนั้น",
+      "🗑️ ลบ — มีให้ยืนยันก่อน",
+    ] },
+    sum: { title: "📊 ดูยอด", buttons: [
+      ["ยอดรวมทั้งหมด", "sumall"], ["ยอดรายเดือน", "sumbymonth"], ["เฉลี่ยต่อวัน", "avgbymonth"],
+      ["แยกโน้ต เดือนนี้", "sumbynote -m"], ["แยกโน้ต ทั้งหมด", "sumbynote"],
+    ], note: "ดูเดือนอื่น: sumbynote -m 2026-10" },
+    wallet: { title: "👛 กระเป๋าเงิน", rows: [
+      ["wallet", "ดูกระเป๋าทั้งหมด (* = ที่ใช้อยู่)", null],
+      ["wallet 1", "สลับไปกระเป๋าหมายเลข 1", null],
+      ["create ชื่อ timezone", "สร้างกระเป๋าใหม่", "create travel Asia/Tokyo"],
+    ], button: ["ดูกระเป๋า", "wallet"] },
+    more: { title: "✨ อื่นๆ", lines: [
+      "🌐 หน้าเว็บ: กราฟ แยกตามหมวด ค้นหา แก้ไขรายการ",
+      "📍 สุ่มร้านอาหาร: แชร์ตำแหน่ง หรือกดปุ่ม 📍 ด้านล่างแชท",
+      "พิมพ์ 'ช่วยเหลือ ข้อความ' เพื่อดูคำอธิบายแบบข้อความ",
+    ], web: "🌐 เปิดหน้าเว็บ", lang: ["English help", "help"] },
+  },
+  en: {
+    eg: "e.g.",
+    alt: "How to use: record -120 lunch / +500 salary, check balances with sumall / sumbymonth, use the card buttons to change category, edit or delete",
+    add: { title: "✍️ Record", rows: [
+      ["-amount note", "Expense", "-120 lunch"],
+      ["+amount note", "Income", "+30000 salary"],
+      ["#category", "Pick the category (optional)", "-60 coffee #drink"],
+      ["-d / -h", "Date / time", "-80 lunch -d 2026-11-01 -h 12:30"],
+    ], note: "Commas and 2 decimals are fine, e.g. -1,500.50" },
+    card: { title: "🏷️ Categories & card", lines: [
+      "The category is picked from the note, e.g. coffee → ☕ drink",
+      "After saving you get a card with buttons:",
+      "🏷️ Change category — remembered for the same note",
+      "✏️ Edit — opens the web app on that record",
+      "🗑️ Delete — asks to confirm",
+    ] },
+    sum: { title: "📊 Balances", buttons: [
+      ["Total balance", "sumall"], ["By month", "sumbymonth"], ["Daily average", "avgbymonth"],
+      ["By note (this month)", "sumbynote -m"], ["By note (all time)", "sumbynote"],
+    ], note: "Another month: sumbynote -m 2026-10" },
+    wallet: { title: "👛 Wallets", rows: [
+      ["wallet", "List wallets (* = current)", null],
+      ["wallet 1", "Switch to wallet 1", null],
+      ["create name timezone", "Create a wallet", "create travel Asia/Tokyo"],
+    ], button: ["My wallets", "wallet"] },
+    more: { title: "✨ More", lines: [
+      "🌐 Web app: charts, categories, search, edit records",
+      "📍 Random restaurant: share your location or tap 📍 below",
+      "Type 'help text' for the plain-text version",
+    ], web: "🌐 Open web app", lang: ["ภาษาไทย", "ช่วยเหลือ"] },
+  },
+};
+
+const C = { ink: "#0b0b0b", sub: "#52514e", muted: "#77766f", code: "#256abf", line: "#e2e1dc" };
+
+function helpBubble(title, contents, footer) {
+  return {
+    type: "bubble", size: "kilo",
+    header: { type: "box", layout: "vertical", paddingBottom: "4px",
+      contents: [{ type: "text", text: title, weight: "bold", size: "md", color: C.ink }] },
+    body: { type: "box", layout: "vertical", spacing: "md", paddingTop: "4px", contents },
+    ...(footer ? { footer: { type: "box", layout: "vertical", spacing: "sm", paddingTop: "0px", contents: footer } } : {}),
+  };
+}
+const helpLine = (t) => ({ type: "text", text: t, size: "sm", color: C.sub, wrap: true });
+const helpNote = (t) => ({ type: "text", text: t, size: "xs", color: C.muted, wrap: true });
+function helpRow([cmd, desc, example], eg = "e.g.") {
+  const box = [
+    { type: "text", text: cmd, size: "sm", weight: "bold", color: C.code, wrap: true },
+    { type: "text", text: desc, size: "sm", color: C.ink, wrap: true },
+  ];
+  if (example) box.push({ type: "text", text: `${eg}  ${example}`, size: "xs", color: C.muted, wrap: true });
+  return { type: "box", layout: "vertical", spacing: "xs", contents: box };
+}
+const helpButton = (label, text, primary) => ({
+  type: "button", style: primary ? "primary" : "secondary", height: "sm", color: primary ? "#256abf" : undefined,
+  action: { type: "message", label: clip(label, 20), text },
+});
+
+function helpCarousel(lang) {
+  const t = HELP_TEXT[lang] || HELP_TEXT.en;
+  const bubbles = [
+    helpBubble(t.add.title, [...t.add.rows.map((r) => helpRow(r, t.eg)), helpNote(t.add.note)]),
+    helpBubble(t.card.title, t.card.lines.map(helpLine)),
+    helpBubble(t.sum.title, [helpNote(t.sum.note)], t.sum.buttons.map(([l, c]) => helpButton(l, c))),
+    helpBubble(t.wallet.title, t.wallet.rows.map((r) => helpRow(r, t.eg)), [helpButton(t.wallet.button[0], t.wallet.button[1])]),
+    helpBubble(t.more.title, t.more.lines.map(helpLine), [
+      { type: "button", style: "primary", height: "sm", color: "#256abf", action: { type: "uri", label: clip(t.more.web, 20), uri: LIFF_URL } },
+      helpButton(t.more.lang[0], t.more.lang[1]),
+    ]),
+  ];
+  // drop undefined colors (secondary buttons)
+  return JSON.parse(JSON.stringify({ type: "flex", altText: clip(t.alt, 400), contents: { type: "carousel", contents: bubbles } }));
 }
 
 let categoryCache = null;
