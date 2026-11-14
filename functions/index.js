@@ -838,7 +838,7 @@ function recordCard(d, { wallet, time, avg }) {
           { type: "text", text: `${cat.icon} ${cat.label}`, size: "xs", color: "#52514e" },
           // The backend asks Gemini after replying (ai_pending): say so, so the
           // user does not fix the category by hand.
-          ...(cat.ai_pending ? [{ type: "text", text: "🤖 AI กำลังช่วยจัดหมวดให้ อีกสักครู่ดูได้ในหน้าเว็บ ไม่ต้องแก้เอง", size: "xxs", color: "#77766f", wrap: true }] : []),
+          ...(cat.ai_pending ? [{ type: "text", text: "🤖 เดี๋ยว AI ช่วยจัดหมวดให้นะ", size: "xxs", color: "#77766f", wrap: true }] : []),
           { type: "text", text: clip(d.detail, 200), weight: "bold", size: "md", wrap: true, color: "#0b0b0b" },
           { type: "text", text: fmtMoney(d.exvalue), weight: "bold", size: "xxl", color: isIncome ? "#256abf" : "#d03b3b" },
           { type: "separator", margin: "md" },
