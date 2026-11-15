@@ -297,6 +297,25 @@ async function handle_message(event) {
       }
     }
 
+    // Monthly summary on/off ("ปิดสรุปรายเดือน" / "เปิดสรุปรายเดือน", or
+    // "summary off" / "summary on"); the backend pushes it on the 1st.
+    const summaryOn =
+      inst_from_user === "เปิดสรุปรายเดือน" || (inst_from_user === "summary" && extracted[1] === "on" && extracted.length === 2) ? true
+      : inst_from_user === "ปิดสรุปรายเดือน" || (inst_from_user === "summary" && extracted[1] === "off" && extracted.length === 2) ? false
+      : null;
+    if (summaryOn !== null && (extracted.length === 1 || inst_from_user === "summary")) {
+      try {
+        await axios.post(`${API_URL}/summarySetting`, { uname: userid, on: summaryOn }, {
+          headers: { "Content-Type": "application/json", "x-api-key": API_KEY },
+        });
+        return summaryOn
+          ? "เปิดสรุปรายเดือนแล้ว 📊 จะส่งสรุปเดือนที่แล้วให้ทุกวันที่ 1 ตอน 9 โมงเช้า (เวลาไทย)\nพิมพ์ \"ปิดสรุปรายเดือน\" เพื่อหยุดรับ"
+          : "ปิดสรุปรายเดือนแล้ว จะไม่ส่งสรุปให้อีก\nพิมพ์ \"เปิดสรุปรายเดือน\" ถ้าอยากรับอีกครั้ง";
+      } catch (error) {
+        return apiErrorMessage(error, "No wallet found, please create wallet first");
+      }
+    }
+
     let wallet;
     try {
       wallet = await getWallet(userid);
