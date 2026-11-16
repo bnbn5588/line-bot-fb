@@ -612,59 +612,46 @@ async function handle_location(event) {
     console.error("G_API_KEY is not set");
     return "Location feature is not configured. Please contact the admin.";
   }
-  const radius = 1000; // Radius in meters (adjust as needed)
-  const type = "restaurant"; // Type of places you want to search for (e.g., restaurant, cafe, etc.)
-  let nextPageToken = null; // Initialize nextPageToken to null
+  const radius = 1000; // Radius in meters
   const places = []; // Open/confirmed places
   const fallbackPlaces = []; // Operational places with no hours data
 
-  // Loop until either we have retrieved 50 places or there are no more pages
-  while (places.length < 50) {
-    // Construct the API URL with the appropriate parameters
-    let apiUrl = `https://maps.googleapis.com/maps/api/place/nearbysearch/json?location=${latitude},${longitude}&radius=${radius}&type=${type}&key=${apiKey}`;
+  // Places API (New) Nearby Search: one call returns up to 20 places with the
+  // name, Maps link, rating and open-now state (the old API needed up to 3 paged
+  // calls, 2 s apart, plus a details call for the chosen place).
+  let results;
+  try {
+    const response = await axios.post(
+      "https://places.googleapis.com/v1/places:searchNearby",
+      {
+        includedTypes: ["restaurant"],
+        maxResultCount: 20,
+        locationRestriction: { circle: { center: { latitude, longitude }, radius } },
+      },
+      {
+        headers: {
+          "X-Goog-Api-Key": apiKey,
+          "X-Goog-FieldMask": "places.id,places.displayName,places.googleMapsUri,places.rating,places.businessStatus,places.currentOpeningHours.openNow",
+        },
+        timeout: 10000,
+      },
+    );
+    results = (response.data && response.data.places) || [];
+  } catch (error) {
+    console.error("Error fetching nearby places:", safeError(error));
+    return "Error fetching nearby places. Please try again later.";
+  }
 
-    // Append nextPageToken if it exists
-    if (nextPageToken) {
-      apiUrl += `&pagetoken=${nextPageToken}`;
+  for (const place of results) {
+    if (place.businessStatus && place.businessStatus !== "OPERATIONAL") continue;
+    const openNow = place.currentOpeningHours && place.currentOpeningHours.openNow;
+    if (openNow === true) {
+      places.push(place);
+    } else if (openNow === undefined) {
+      // No hours data — keep as fallback in case all others are closed
+      fallbackPlaces.push(place);
     }
-
-    try {
-      const response = await axios.get(apiUrl);
-
-      // Extract places from the response
-      const results = response.data.results;
-
-      for (const place of results) {
-        const placeId = place.place_id;
-        const businessStatus = place.business_status;
-        const rating = place.rating;
-        const opening_hours = place.opening_hours;
-
-        const openNow = opening_hours && opening_hours.open_now;
-
-        if (businessStatus === "OPERATIONAL") {
-          if (openNow === true) {
-            places.push({ placeId, rating });
-          } else if (openNow === undefined) {
-            // No hours data — keep as fallback in case all others are closed
-            fallbackPlaces.push({ placeId, rating });
-          }
-          // openNow === false means confirmed closed — skip entirely
-        }
-      }
-
-      // Check if there is a next page token
-      nextPageToken = response.data.next_page_token;
-
-      if (!nextPageToken) {
-        break;
-      }
-      // Google requires a short delay before the next_page_token becomes valid
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-    } catch (error) {
-      console.error("Error fetching nearby places:", safeError(error));
-      return "Error fetching nearby places. Please try again later.";
-    }
+    // openNow === false means confirmed closed — skip entirely
   }
 
   let usingFallback = false;
@@ -700,54 +687,13 @@ async function handle_location(event) {
     }
   }
 
-  // Print the selected place
-  console.log("Randomly selected place:", selectedPlace && selectedPlace.name);
-  /*
-    // Process the places or build a response text
-    let responseText = `Nearby places for user`;
-
-    for (let i = 0; i < places.length; i++) {
-      const place = places[i];
-      responseText += `\n${i + 1}. Place ID: ${place.placeId}, Rating: ${place.rating}`;
-    }
-    */
-  try {
-    // Fetch place details using the selected place's place ID
-    const placeDetails = await fetchPlaceDetails(selectedPlace.placeId, apiKey);
-
-    // Construct Google Maps link using place details
-    const googleMapsLink = placeDetails.googleMapsUri;
-    const name = placeDetails.displayName.text;
-    const note = usingFallback
-      ? "\n(Hours unavailable — may not be open right now)"
-      : "";
-    const responseText = `Randomly selected place: ${name}\nGoogle Maps link: ${googleMapsLink}${note}`;
-
-    // Return the response text containing the selected place and the Google Maps link
-    return responseText;
-  } catch (error) {
-    // Handle error fetching place details
-    return "Error fetching place details. Please try again later.";
-  }
-}
-
-// Function to fetch place details using place ID
-async function fetchPlaceDetails(placeId, apiKey) {
-  try {
-    const response = await axios.get(
-      `https://places.googleapis.com/v1/places/${placeId}`,
-      {
-        headers: {
-          "X-Goog-Api-Key": apiKey,
-          "X-Goog-FieldMask": "id,displayName,googleMapsUri",
-        },
-      },
-    );
-    return response.data;
-  } catch (error) {
-    console.error("Error fetching place details:", safeError(error));
-    throw error;
-  }
+  const name = (selectedPlace.displayName && selectedPlace.displayName.text) || "Restaurant";
+  const googleMapsLink = selectedPlace.googleMapsUri ||
+    `https://www.google.com/maps/place/?q=place_id:${selectedPlace.id}`;
+  const note = usingFallback
+    ? "\n(Hours unavailable — may not be open right now)"
+    : "";
+  return `Randomly selected place: ${name}\nGoogle Maps link: ${googleMapsLink}${note}`;
 }
 
 // LINE rejects the whole reply if any text message is over 5000 characters,
