@@ -847,7 +847,7 @@ function recordCard(d, { wallet, time, avg }) {
   const walletName = wallet && wallet.wallet_name ? `[${wallet.wallet_id}] ${wallet.wallet_name}` : `[${d.wallet_id}]`;
   return {
     type: "flex",
-    altText: clip(`บันทึก ${fmtMoney(d.exvalue)} ${d.detail} (${cat.icon} ${cat.label})`, 400),
+    altText: clip(`${d.budget ? budgetText(d.budget) + " · " : ""}บันทึก ${fmtMoney(d.exvalue)} ${d.detail} (${cat.icon} ${cat.label})`, 400),
     contents: {
       type: "bubble",
       size: "kilo",
@@ -860,6 +860,8 @@ function recordCard(d, { wallet, time, avg }) {
           ...(cat.ai_pending ? [{ type: "text", text: "🤖 เดี๋ยว AI ช่วยจัดหมวดให้นะ", size: "xxs", color: "#77766f", wrap: true }] : []),
           { type: "text", text: clip(d.detail, 200), weight: "bold", size: "md", wrap: true, color: "#0b0b0b" },
           { type: "text", text: fmtMoney(d.exvalue), weight: "bold", size: "xxl", color: isIncome ? "#256abf" : "#d03b3b" },
+          ...(d.budget ? [{ type: "text", text: budgetText(d.budget), size: "xs", wrap: true, weight: "bold",
+            color: d.budget.level === "over" ? "#d03b3b" : "#b86e00", margin: "sm" }] : []),
           { type: "separator", margin: "md" },
           { type: "box", layout: "vertical", spacing: "xs", margin: "md", contents: [
             kv("วันที่", `${d.targetdate} ${String(time || "").slice(0, 5)}`.trim()),
@@ -886,6 +888,16 @@ function recordCard(d, { wallet, time, avg }) {
       },
     },
   };
+}
+
+// d.budget from /add or /setCategory: this record took the category past 80%
+// of its monthly budget ("near") or over it ("over"). Budgets are set in the web app.
+function budgetText(b) {
+  if (!b) return null;
+  const m = (v) => fmtMoney(v, false);
+  return b.level === "over"
+    ? `🚨 เกินงบ ${b.icon} ${b.label} แล้ว ${m(b.spent)} / ${m(b.amount)} (เกิน ${m(b.spent - b.amount)})`
+    : `⚠️ งบ ${b.icon} ${b.label} ใช้ไป ${b.pct}% แล้ว ${m(b.spent)} / ${m(b.amount)} (เหลือ ${m(b.amount - b.spent)})`;
 }
 
 // ---------- help: content comes from the backend (/api/help?lang=),
@@ -1016,7 +1028,8 @@ async function handle_postback(ev) {
     if (action === "setcat") {
       const r = await axios.post(`${API_URL}/setCategory`, { uname: userid, id, category: p.get("c") }, { headers });
       const d = r.data.data;
-      return `✅ เปลี่ยนหมวดเป็น ${d.category.icon} ${d.category.label} แล้ว\n"${clip(d.note, 60)}" ครั้งต่อไปจะใช้หมวดนี้ให้อัตโนมัติ`;
+      return `✅ เปลี่ยนหมวดเป็น ${d.category.icon} ${d.category.label} แล้ว\n"${clip(d.note, 60)}" ครั้งต่อไปจะใช้หมวดนี้ให้อัตโนมัติ` +
+        (d.budget ? `\n\n${budgetText(d.budget)}` : "");
     }
 
     if (action === "del") {
