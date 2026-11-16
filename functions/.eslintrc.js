@@ -11,7 +11,7 @@ module.exports = {
     "no-restricted-globals": ["error", "name", "length"],
     "prefer-arrow-callback": "error",
     "linebreak-style": ["error", "unix"], // For 'LF' (Unix/Mac)
-    quotes: ["error", "double", { allowTemplateLiterals: true }],
+    "quotes": ["error", "double", {allowTemplateLiterals: true}],
   },
   overrides: [
     {
