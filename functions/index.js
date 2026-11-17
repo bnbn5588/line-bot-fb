@@ -87,8 +87,10 @@ function safeError(error) {
 }
 
 // Deployed to Singapore (asia-southeast1) — the closest GCP region to Thailand.
+// maxInstances caps how far a flood of webhooks can scale (and bill).
 exports.LineBot = functions
   .region("asia-southeast1")
+  .runWith({ maxInstances: 10 })
   .https.onRequest(async (req, res) => {
   // Reject anything that is not a signed request from LINE
   if (!isValidLineSignature(req)) {
@@ -113,8 +115,28 @@ exports.LineBot = functions
   res.status(200).send("OK");
 });
 
+const GROUP_NOTICE =
+  "บอทนี้ใช้ได้เฉพาะแชทส่วนตัว เพื่อไม่ให้คนอื่นในกลุ่มเห็นยอดเงินของคุณ กรุณาทักบอทในแชท 1:1\n" +
+  "This bot only works in a 1:1 chat, so others in the group cannot see your money.";
+
 async function handleEvent(ev) {
   if (!ev.replyToken) {
+    return;
+  }
+  // Group and room chats: answers (sums, balances, notes) would be visible to
+  // everyone there. Say so once when added, otherwise stay silent.
+  if (!ev.source || ev.source.type !== "user") {
+    if (ev.type === "join") {
+      try {
+        await axios.post(
+          `${LINE_MESSAGING_API}/reply`,
+          { replyToken: ev.replyToken, messages: [{ type: "text", text: GROUP_NOTICE }] },
+          { headers: LINE_HEADER },
+        );
+      } catch (error) {
+        console.error("Error sending group notice:", safeError(error));
+      }
+    }
     return;
   }
   const isPostback = ev.type === "postback" && ev.postback;
