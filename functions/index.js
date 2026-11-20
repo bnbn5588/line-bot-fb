@@ -277,19 +277,23 @@ async function handle_message(event) {
 
     // Create Wallet
     if (inst_from_user === "create") {
-      if (!extracted[1] || !extracted[2] || extracted.length > 3) {
+      // The timezone is the last word; the name is everything before it
+      // and may have spaces ("create เงิน เก็บ Asia/Bangkok").
+      if (extracted.length < 3) {
         return (
           "Usage: create [wallet_name] [timezone]\n" +
           "For example, 'create main Asia/Bangkok'"
         );
       }
+      const walletName = extracted.slice(1, -1).join(" ");
+      const walletTz = extracted[extracted.length - 1];
       try {
         const response = await axios.post(
           `${API_URL}/createWallet`,
           {
             uname: userid,
-            wallet_name: extracted[1],
-            timezone: extracted[2],
+            wallet_name: walletName,
+            timezone: walletTz,
           },
           {
             headers: {
@@ -543,6 +547,11 @@ async function handle_message(event) {
             !moment(next, "YYYY-MM-DD", true).isValid()
           ) {
             return `Invalid date '${next}'. Use YYYY-MM-DD, e.g. -d 2026-03-15`;
+          }
+          // a mistyped year (1926, 2062): the backend takes 2000-01-01 .. 1 year ahead
+          const maxDate = moment().add(1, "year").format("YYYY-MM-DD");
+          if (next < "2000-01-01" || next > maxDate) {
+            return `Date '${next}' is out of range. Use a date from 2000-01-01 to ${maxDate}.`;
           }
           justdate = next;
           year_n_month = next.slice(0, 7);
