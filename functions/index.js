@@ -549,7 +549,7 @@ async function handle_message(event) {
             return `Invalid date '${next}'. Use YYYY-MM-DD, e.g. -d 2026-03-15`;
           }
           // a mistyped year (1926, 2062): the backend takes 2000-01-01 .. 1 year ahead
-          const maxDate = moment().add(1, "year").format("YYYY-MM-DD");
+          const maxDate = moment.utc().add(14, "hours").add(1, "year").format("YYYY-MM-DD"); // same as the backend
           if (next < "2000-01-01" || next > maxDate) {
             return `Date '${next}' is out of range. Use a date from 2000-01-01 to ${maxDate}.`;
           }
@@ -808,7 +808,12 @@ const fmtMoney = (v, signed = true) => {
   return n < 0 ? "−" + s : (signed && n > 0 ? "+" : "") + s;
 };
 // LINE limits: label 20 chars, postback data 300 chars, text 2000 in a flex text
-const clip = (t, n) => (String(t).length > n ? String(t).slice(0, n - 1) + "…" : String(t));
+// Counts code points, so an emoji is never cut in half (LINE refuses a flex
+// message with half an emoji in it)
+const clip = (t, n) => {
+  const c = Array.from(String(t));
+  return c.length > n ? c.slice(0, n - 1).join("") + "…" : c.join("");
+};
 
 function kv(label, value) {
   return {
