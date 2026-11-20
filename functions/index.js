@@ -374,6 +374,16 @@ async function handle_message(event) {
       }
     }
 
+    // The trash: "restore wallet" / "กู้กระเป๋า" / "trash"
+    if ((inst_from_user === "restore" && (extracted[1] || "").toLowerCase() === "wallet" && extracted.length === 2) ||
+        ((inst_from_user === "กู้กระเป๋า" || inst_from_user === "trash" || inst_from_user === "ถังขยะ") && extracted.length === 1)) {
+      try {
+        return await walletTrashList(userid);
+      } catch (error) {
+        return apiErrorMessage(error);
+      }
+    }
+
     // Delete the current wallet: "delete wallet" / "ลบกระเป๋า" → confirm card
     if ((inst_from_user === "delete" && (extracted[1] || "").toLowerCase() === "wallet" && extracted.length === 2) ||
         (inst_from_user === "ลบกระเป๋า" && extracted.length === 1)) {
@@ -1009,7 +1019,8 @@ async function getCategories() {
 }
 
 const walletHeaders = { "Content-Type": "application/json", "x-api-key": API_KEY };
-// A delete-wallet button carries the wallet id, a short hash of its name and
+// "Delete" moves the wallet to the trash (restorable for 30 days, then the
+// backend purges it). A delete-wallet button carries the wallet id, a short hash of its name and
 // when it was made: it stops working after 10 minutes, and never deletes a
 // different wallet that later got the same id or a new name.
 const WALLET_DELETE_TTL_MS = 10 * 60 * 1000;
@@ -1018,17 +1029,17 @@ const nameHash = (name) => crypto.createHash("sha256").update(String(name || "")
 function walletDeleteConfirm(d) {
   const t = Date.now().toString(36);
   const what = d.records > 0
-    ? `รายการ ${Number(d.records).toLocaleString("en-US")} รายการในกระเป๋านี้จะถูกลบด้วย`
-    : "กระเป๋านี้ยังไม่มีรายการ";
+    ? `(มี ${Number(d.records).toLocaleString("en-US")} รายการ)`
+    : "(ยังไม่มีรายการ)";
   return {
     messages: [{
       type: "template",
       altText: "ยืนยันการลบกระเป๋า",
       template: {
         type: "confirm",
-        text: clip(`ลบกระเป๋า [${d.wallet_id}] ${d.wallet_name || "-"} ถาวรใช่ไหม?\n${what} กู้คืนไม่ได้`, 240),
+        text: `ลบกระเป๋า [${d.wallet_id}] ${clip(d.wallet_name || "-", 40)} ${what} ใช่ไหม?\nจะย้ายไปถังขยะ กู้คืนได้ภายใน ${d.trash_days || 30} วัน`,
         actions: [
-          { type: "postback", label: "ลบถาวร", data: `a=wdelok&id=${d.wallet_id}&h=${nameHash(d.wallet_name)}&t=${t}`, displayText: "ยืนยันลบกระเป๋า" },
+          { type: "postback", label: "ลบ", data: `a=wdelok&id=${d.wallet_id}&h=${nameHash(d.wallet_name)}&t=${t}`, displayText: "ยืนยันลบกระเป๋า" },
           { type: "postback", label: "ยกเลิก", data: `a=wcancel&id=${d.wallet_id}`, displayText: "ยกเลิก" },
         ],
       },
@@ -1051,8 +1062,30 @@ async function walletDeleteConfirmed(userid, p) {
   }
   const r = await axios.post(`${API_URL}/manageWallet`, { uname: userid, action: "delete", wallet_id: id, wallet_name: info.wallet_name }, { headers: walletHeaders });
   const d = r.data.data;
-  return `🗑️ ลบกระเป๋า [${d.wallet_id}] ${clip(d.wallet_name || "-", 60)} แล้ว (${Number(d.records).toLocaleString("en-US")} รายการ)` +
+  return `🗑️ ย้ายกระเป๋า [${d.wallet_id}] ${clip(d.wallet_name || "-", 60)} ไปถังขยะแล้ว\n` +
+    `กู้คืนได้ภายใน ${d.trash_days} วัน พิมพ์ "กู้กระเป๋า"` +
     (d.current ? `\nตอนนี้ใช้กระเป๋า [${d.current.wallet_id}] ${clip(d.current.wallet_name || "-", 60)}` : "");
+}
+
+// "restore wallet" / "กู้กระเป๋า": the trash, one button per wallet (max 13).
+async function walletTrashList(userid) {
+  const d = (await axios.post(`${API_URL}/manageWallet`, { uname: userid, action: "trash" }, { headers: walletHeaders })).data.data;
+  if (!d.trash.length) return "ถังขยะว่าง ไม่มีกระเป๋าที่ลบไว้";
+  const lines = d.trash.map((w) => `[${w.wallet_id}] ${clip(w.wallet_name || "-", 40)} · ${Number(w.records).toLocaleString("en-US")} รายการ · เหลือ ${w.days_left} วัน`);
+  return {
+    messages: [{ type: "text", text: `🗑️ ถังขยะ (ลบถาวรเมื่อครบ ${d.trash_days} วัน)\n${lines.join("\n")}\n\nกดปุ่มด้านล่างเพื่อกู้คืน 👇` }],
+    quickReply: {
+      items: d.trash.slice(0, 13).map((w) => ({
+        type: "action",
+        action: {
+          type: "postback",
+          label: clip(`♻️ ${w.wallet_name || w.wallet_id}`, 20),
+          data: `a=wrestore&id=${w.wallet_id}`,
+          displayText: `กู้คืนกระเป๋า [${w.wallet_id}]`,
+        },
+      })),
+    },
+  };
 }
 
 // Buttons on the card. Who pressed it comes from the signed event, so a
@@ -1127,11 +1160,20 @@ async function handle_postback(ev) {
       return await walletDeleteConfirmed(userid, p);
     }
 
+    if (action === "wrestore") {
+      const r = await axios.post(`${API_URL}/manageWallet`, { uname: userid, action: "restore", wallet_id: id }, { headers });
+      const d = r.data.data;
+      return `♻️ กู้คืนกระเป๋า [${d.wallet_id}] ${clip(d.wallet_name || "-", 60)} แล้ว\nพิมพ์ "wallet ${d.wallet_id}" เพื่อสลับไปใช้`;
+    }
+
     if (action === "wcancel") {
       return "ไม่ได้ลบกระเป๋า 👍";
     }
   } catch (error) {
     const status = error && error.response && error.response.status;
+    if (status === 404 && action === "wrestore") {
+      return "ไม่พบกระเป๋านี้ในถังขยะแล้ว (อาจกู้คืนหรือลบถาวรไปแล้ว)";
+    }
     if (status === 404 && action === "wdelok") {
       return "ไม่พบกระเป๋านี้แล้ว (อาจถูกลบไปแล้ว)";
     }
