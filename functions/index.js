@@ -357,6 +357,38 @@ async function handle_message(event) {
         "For example, 'create default_wallet Asia/Taipei'";
       return res_message;
     }
+    // Rename the current wallet: "rename เงิน เก็บ" / "เปลี่ยนชื่อกระเป๋า เงินเก็บ"
+    if (inst_from_user === "rename" || inst_from_user === "เปลี่ยนชื่อกระเป๋า") {
+      const newName = extracted.slice(1).join(" ");
+      if (!newName) {
+        return "พิมพ์ชื่อใหม่ต่อท้าย เช่น \"rename เงินเก็บ\"\nUsage: rename [new name]";
+      }
+      try {
+        const r = await axios.post(`${API_URL}/manageWallet`, { uname: userid, action: "rename", wallet_name: newName }, { headers: walletHeaders });
+        const d = r.data.data;
+        return `✏️ เปลี่ยนชื่อกระเป๋า [${d.wallet_id}] แล้ว\n${clip(d.old_name || "-", 60)} → ${clip(d.wallet_name, 60)}`;
+      } catch (error) {
+        const st = error && error.response && error.response.status;
+        if (st === 400) return "ชื่อยาวเกินไป (สูงสุด 150 ไบต์ ประมาณ 50 ตัวอักษรไทย)";
+        return apiErrorMessage(error);
+      }
+    }
+
+    // Delete the current wallet: "delete wallet" / "ลบกระเป๋า" → confirm card
+    if ((inst_from_user === "delete" && (extracted[1] || "").toLowerCase() === "wallet" && extracted.length === 2) ||
+        (inst_from_user === "ลบกระเป๋า" && extracted.length === 1)) {
+      try {
+        const r = await axios.post(`${API_URL}/manageWallet`, { uname: userid, action: "info" }, { headers: walletHeaders });
+        const d = r.data.data;
+        if (d.wallets < 2) {
+          return `ลบ [${d.wallet_id}] ${clip(d.wallet_name || "-", 60)} ไม่ได้ เพราะเป็นกระเป๋าเดียวที่มี\nสร้างกระเป๋าใหม่ก่อน เช่น "create main Asia/Bangkok"`;
+        }
+        return walletDeleteConfirm(d);
+      } catch (error) {
+        return apiErrorMessage(error);
+      }
+    }
+
     const tz = wallet.timezone; // Use wallet's timezone
     const localDatetime = moment.tz(new Date(), tz);
 
@@ -976,6 +1008,53 @@ async function getCategories() {
   return categoryCache;
 }
 
+const walletHeaders = { "Content-Type": "application/json", "x-api-key": API_KEY };
+// A delete-wallet button carries the wallet id, a short hash of its name and
+// when it was made: it stops working after 10 minutes, and never deletes a
+// different wallet that later got the same id or a new name.
+const WALLET_DELETE_TTL_MS = 10 * 60 * 1000;
+const nameHash = (name) => crypto.createHash("sha256").update(String(name || "")).digest("hex").slice(0, 10);
+
+function walletDeleteConfirm(d) {
+  const t = Date.now().toString(36);
+  const what = d.records > 0
+    ? `รายการ ${Number(d.records).toLocaleString("en-US")} รายการในกระเป๋านี้จะถูกลบด้วย`
+    : "กระเป๋านี้ยังไม่มีรายการ";
+  return {
+    messages: [{
+      type: "template",
+      altText: "ยืนยันการลบกระเป๋า",
+      template: {
+        type: "confirm",
+        text: clip(`ลบกระเป๋า [${d.wallet_id}] ${d.wallet_name || "-"} ถาวรใช่ไหม?\n${what} กู้คืนไม่ได้`, 240),
+        actions: [
+          { type: "postback", label: "ลบถาวร", data: `a=wdelok&id=${d.wallet_id}&h=${nameHash(d.wallet_name)}&t=${t}`, displayText: "ยืนยันลบกระเป๋า" },
+          { type: "postback", label: "ยกเลิก", data: `a=wcancel&id=${d.wallet_id}`, displayText: "ยกเลิก" },
+        ],
+      },
+    }],
+  };
+}
+
+async function walletDeleteConfirmed(userid, p) {
+  const id = p.get("id");
+  const made = parseInt(p.get("t") || "", 36);
+  if (!Number.isFinite(made) || Date.now() - made > WALLET_DELETE_TTL_MS || Date.now() < made - 60000) {
+    return "ปุ่มนี้หมดอายุแล้ว พิมพ์ \"delete wallet\" ใหม่อีกครั้ง";
+  }
+  const info = (await axios.post(`${API_URL}/manageWallet`, { uname: userid, action: "info", wallet_id: id }, { headers: walletHeaders })).data.data;
+  if (nameHash(info.wallet_name) !== p.get("h")) {
+    return "ไม่พบกระเป๋านี้แล้ว (อาจถูกลบหรือเปลี่ยนชื่อไปแล้ว)";
+  }
+  if (info.wallets < 2) {
+    return `ลบ [${info.wallet_id}] ${clip(info.wallet_name || "-", 60)} ไม่ได้ เพราะเป็นกระเป๋าเดียวที่มี`;
+  }
+  const r = await axios.post(`${API_URL}/manageWallet`, { uname: userid, action: "delete", wallet_id: id, wallet_name: info.wallet_name }, { headers: walletHeaders });
+  const d = r.data.data;
+  return `🗑️ ลบกระเป๋า [${d.wallet_id}] ${clip(d.wallet_name || "-", 60)} แล้ว (${Number(d.records).toLocaleString("en-US")} รายการ)` +
+    (d.current ? `\nตอนนี้ใช้กระเป๋า [${d.current.wallet_id}] ${clip(d.current.wallet_name || "-", 60)}` : "");
+}
+
 // Buttons on the card. Who pressed it comes from the signed event, so a
 // forwarded or old card can never touch someone else's record (the backend
 // also checks that the record belongs to this user).
@@ -1043,8 +1122,22 @@ async function handle_postback(ev) {
     if (action === "cancel") {
       return "ไม่ได้ลบ 👍";
     }
+
+    if (action === "wdelok") {
+      return await walletDeleteConfirmed(userid, p);
+    }
+
+    if (action === "wcancel") {
+      return "ไม่ได้ลบกระเป๋า 👍";
+    }
   } catch (error) {
     const status = error && error.response && error.response.status;
+    if (status === 404 && action === "wdelok") {
+      return "ไม่พบกระเป๋านี้แล้ว (อาจถูกลบไปแล้ว)";
+    }
+    if (status === 409 && action === "wdelok") {
+      return "ลบไม่ได้ เพราะเป็นกระเป๋าเดียวที่มี";
+    }
     if (status === 404) {
       return "ไม่พบรายการนี้แล้ว (อาจถูกลบไปแล้ว)";
     }
