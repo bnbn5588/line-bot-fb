@@ -265,9 +265,10 @@ async function handle_message(event) {
   let res_message = "-";
 
   try {
-    const msg_from_user = event.events[0].message.text.trim();
+    // A new line counts as a space ("-120" then "lunch" on the next line)
+    const msg_from_user = event.events[0].message.text.replace(/\s+/g, " ").trim();
     const userid = event.events[0].source.userId;
-    let extracted = msg_from_user.split(" ");
+    const extracted = msg_from_user.split(" ");
     const inst_from_user = extracted[0].toLowerCase();
 
     // Log the command, not the user's text (amounts and notes are personal data)
@@ -528,39 +529,41 @@ async function handle_message(event) {
         );
       }
 
-      const get_date = msg_from_user.split("-d ");
-      const get_hour = msg_from_user.split("-h ");
-
-      if (get_date.length >= 2) {
-        const extracted_date = get_date[1].split("-h")[0].trim();
-        if (
-          !/^\d{4}-\d{2}-\d{2}$/.test(extracted_date) ||
-          !moment(extracted_date, "YYYY-MM-DD", true).isValid()
-        ) {
-          return `Invalid date '${extracted_date}'. Use YYYY-MM-DD, e.g. -d 2026-03-15`;
+      // -d YYYY-MM-DD and -h HH:mm are words of their own, anywhere after the
+      // amount. Only a date / time after them counts: "-d 5 คน" in a note
+      // stays part of the note.
+      const words = msg_from_user.split(" ").slice(1);
+      const noteWords = [];
+      for (let i = 0; i < words.length; i++) {
+        const w = words[i];
+        const next = words[i + 1];
+        if (w === "-d" && next !== undefined && /^\d{1,4}[-/.]\d{1,2}[-/.]\d{1,4}$/.test(next)) {
+          if (
+            !/^\d{4}-\d{2}-\d{2}$/.test(next) ||
+            !moment(next, "YYYY-MM-DD", true).isValid()
+          ) {
+            return `Invalid date '${next}'. Use YYYY-MM-DD, e.g. -d 2026-03-15`;
+          }
+          justdate = next;
+          year_n_month = next.slice(0, 7);
+          i++;
+          continue;
         }
-        justdate = extracted_date;
-        year_n_month = extracted_date.slice(0, 7);
-      }
-      if (get_hour.length >= 2) {
-        const extracted_hour = get_hour[1].split("-d")[0].trim();
-        // Accept HH:mm as well as HH:mm:ss (the API needs seconds)
-        const hourMatch = /^([01]\d|2[0-3]):([0-5]\d)(:([0-5]\d))?$/.exec(
-          extracted_hour,
-        );
-        if (!hourMatch) {
-          return `Invalid time '${extracted_hour}'. Use HH:mm, e.g. -h 14:30`;
+        if (w === "-h" && next !== undefined && /^\d{1,2}[:.]\d{1,2}([:.]\d{1,2})?$/.test(next)) {
+          // Accept HH:mm (9:30 too) as well as HH:mm:ss (the API needs seconds)
+          const hourMatch = /^([01]?\d|2[0-3]):([0-5]\d)(:([0-5]\d))?$/.exec(next);
+          if (!hourMatch) {
+            return `Invalid time '${next}'. Use HH:mm, e.g. -h 14:30`;
+          }
+          justhour = `${hourMatch[1].padStart(2, "0")}:${hourMatch[2]}:${hourMatch[4] || "00"}`;
+          i++;
+          continue;
         }
-        justhour = `${hourMatch[1]}:${hourMatch[2]}:${hourMatch[4] || "00"}`;
+        noteWords.push(w);
       }
 
       const targetdate = `${justdate} ${justhour}`;
-
-      // The note is everything after the amount. Strip the -d / -h flag
-      // segments first so they don't leak into the description.
-      const note_source = msg_from_user.split("-d ")[0].split("-h ")[0].trim();
-      extracted = note_source.split(" ");
-      const note = extracted.slice(1).join(" ").trim();
+      const note = noteWords.join(" ").trim();
 
       if (!note) {
         return (
