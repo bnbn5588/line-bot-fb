@@ -344,7 +344,8 @@ async function handle_message(event) {
     }
 
     // Weekly summary / 21:00 reminder on-off ("เปิดเตือนจด", "weekly on", ...)
-    const notifyCmd = NOTIFY_WORDS[msg_from_user.toLowerCase()];
+    const notifyKey = msg_from_user.toLowerCase();
+    const notifyCmd = Object.hasOwn(NOTIFY_WORDS, notifyKey) ? NOTIFY_WORDS[notifyKey] : null;
     if (notifyCmd) {
       try {
         await axios.post(`${API_URL}/summarySetting`, { uname: userid, kind: notifyCmd.kind, on: notifyCmd.on }, {
