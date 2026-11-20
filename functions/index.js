@@ -343,6 +343,19 @@ async function handle_message(event) {
       }
     }
 
+    // Weekly summary / 21:00 reminder on-off ("เปิดเตือนจด", "weekly on", ...)
+    const notifyCmd = NOTIFY_WORDS[msg_from_user.toLowerCase()];
+    if (notifyCmd) {
+      try {
+        await axios.post(`${API_URL}/summarySetting`, { uname: userid, kind: notifyCmd.kind, on: notifyCmd.on }, {
+          headers: { "Content-Type": "application/json", "x-api-key": API_KEY },
+        });
+        return NOTIFY_REPLY[`${notifyCmd.kind}:${notifyCmd.on}`];
+      } catch (error) {
+        return apiErrorMessage(error, "No wallet found, please create wallet first");
+      }
+    }
+
     let wallet;
     try {
       wallet = await getWallet(userid);
@@ -1018,6 +1031,20 @@ async function getCategories() {
   return categoryCache;
 }
 
+// Opt-in notifications (backend components/notify.js)
+const NOTIFY_WORDS = {
+  "เปิดเตือนจด": { kind: "remind", on: true }, "เตือนจด": { kind: "remind", on: true }, "remind on": { kind: "remind", on: true },
+  "ปิดเตือนจด": { kind: "remind", on: false }, "remind off": { kind: "remind", on: false },
+  "เปิดสรุปรายสัปดาห์": { kind: "weekly", on: true }, "weekly on": { kind: "weekly", on: true },
+  "ปิดสรุปรายสัปดาห์": { kind: "weekly", on: false }, "weekly off": { kind: "weekly", on: false },
+};
+const NOTIFY_REPLY = {
+  "remind:true": "เปิดเตือนจดแล้ว 📝 ถ้าวันไหนยังไม่ได้จดเลย บอทจะเตือนตอน 3 ทุ่ม (เวลาไทย)\nพิมพ์ \"ปิดเตือนจด\" เพื่อหยุด",
+  "remind:false": "ปิดเตือนจดแล้ว\nพิมพ์ \"เปิดเตือนจด\" ถ้าอยากให้เตือนอีกครั้ง",
+  "weekly:true": "เปิดสรุปรายสัปดาห์แล้ว 🗓️ จะส่งสรุปสัปดาห์ที่แล้วให้ทุกวันจันทร์ 9 โมงเช้า (เวลาไทย)\nพิมพ์ \"ปิดสรุปรายสัปดาห์\" เพื่อหยุด",
+  "weekly:false": "ปิดสรุปรายสัปดาห์แล้ว\nพิมพ์ \"เปิดสรุปรายสัปดาห์\" ถ้าอยากรับอีกครั้ง",
+};
+
 const walletHeaders = { "Content-Type": "application/json", "x-api-key": API_KEY };
 // "Delete" moves the wallet to the trash (restorable for 30 days, then the
 // backend purges it). A delete-wallet button carries the wallet id, a short hash of its name and
@@ -1169,6 +1196,11 @@ async function handle_postback(ev) {
 
     if (action === "wdelok") {
       return await walletDeleteConfirmed(userid, p);
+    }
+
+    if (action === "nospend") {
+      await axios.post(`${API_URL}/summarySetting`, { uname: userid, kind: "nospend" }, { headers });
+      return "รับทราบ 👍 วันนี้จะไม่เตือนแล้ว";
     }
 
     if (action === "wrestore") {
