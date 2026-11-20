@@ -1067,11 +1067,22 @@ async function walletDeleteConfirmed(userid, p) {
     (d.current ? `\nตอนนี้ใช้กระเป๋า [${d.current.wallet_id}] ${clip(d.current.wallet_name || "-", 60)}` : "");
 }
 
+// Quick-reply labels: at most 20 characters. Count UTF-16 units (stricter
+// than code points) and never cut an emoji in half.
+function labelClip(t, max = 20) {
+  let out = "";
+  for (const ch of Array.from(String(t))) {
+    if ((out + ch).length > max - 1) return out + "…";
+    out += ch;
+  }
+  return out;
+}
+
 // "restore wallet" / "กู้กระเป๋า": the trash, one button per wallet (max 13).
 async function walletTrashList(userid) {
   const d = (await axios.post(`${API_URL}/manageWallet`, { uname: userid, action: "trash" }, { headers: walletHeaders })).data.data;
   if (!d.trash.length) return "ถังขยะว่าง ไม่มีกระเป๋าที่ลบไว้";
-  const lines = d.trash.map((w) => `[${w.wallet_id}] ${clip(w.wallet_name || "-", 40)} · ${Number(w.records).toLocaleString("en-US")} รายการ · เหลือ ${w.days_left} วัน`);
+  const lines = d.trash.map((w) => `[${w.wallet_id}] ${clip(w.wallet_name || "-", 40)} · ${Number(w.records).toLocaleString("en-US")} รายการ · ${w.days_left > 0 ? `เหลือ ${w.days_left} วัน` : "จะลบถาวรคืนนี้"}`);
   return {
     messages: [{ type: "text", text: `🗑️ ถังขยะ (ลบถาวรเมื่อครบ ${d.trash_days} วัน)\n${lines.join("\n")}\n\nกดปุ่มด้านล่างเพื่อกู้คืน 👇` }],
     quickReply: {
@@ -1079,7 +1090,7 @@ async function walletTrashList(userid) {
         type: "action",
         action: {
           type: "postback",
-          label: clip(`♻️ ${w.wallet_name || w.wallet_id}`, 20),
+          label: labelClip(`♻️ [${w.wallet_id}] ${w.wallet_name || ""}`),
           data: `a=wrestore&id=${w.wallet_id}`,
           displayText: `กู้คืนกระเป๋า [${w.wallet_id}]`,
         },
