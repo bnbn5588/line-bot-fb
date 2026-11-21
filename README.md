@@ -36,6 +36,12 @@ Firebase Function: LineBot
 | `avgbymonth` | Average daily balance per month | `avgbymonth` |
 | `wallet` | List all wallets (`*` = active) | `wallet` |
 | `wallet [id]` | Switch active wallet | `wallet 3` |
+| `rename [name]` / `เปลี่ยนชื่อกระเป๋า [name]` | Rename the active wallet | `rename Travel` |
+| `delete wallet` / `ลบกระเป๋า` | Move the active wallet to the trash (confirm card, button valid 10 minutes; restorable for 30 days) | `ลบกระเป๋า` |
+| `trash` / `ถังขยะ` / `กู้กระเป๋า` | List trashed wallets with restore buttons | `ถังขยะ` |
+| `summary on` / `summary off` (`เปิด/ปิดสรุปรายเดือน`) | Monthly summary on the 1st | `ปิดสรุปรายเดือน` |
+| `weekly on` / `weekly off` (`เปิด/ปิดสรุปรายสัปดาห์`) | Weekly summary every Monday 09:00 (Thai time) | `เปิดสรุปรายสัปดาห์` |
+| `remind on` / `remind off` (`เปิด/ปิดเตือนจด`) | Reminder at 21:00 (Thai time) on days with no record; its "วันนี้ไม่ได้ใช้เงิน" button skips today | `เปิดเตือนจด` |
 | `+[amount] [note]` | Add income | `+500 salary` |
 | `-[amount] [note]` | Add expense (commas allowed, up to 2 decimals) | `-1,500.50 rent` |
 | `+/-[amount] [note] -d [YYYY-MM-DD]` | Record with specific date | `-80 coffee -d 2024-03-15` |
@@ -141,6 +147,8 @@ This webhook delegates all expense data to an external REST API. The expected en
 | `GET` | `/wallets` | List all wallets for a user |
 | `POST` | `/createWallet` | Create a new wallet |
 | `POST` | `/changeWallet` | Switch the active wallet |
+| `POST` | `/manageWallet` | Rename, trash or restore a wallet |
+| `POST` | `/summarySetting` | Monthly / weekly summary and reminder on/off, "no spending today" |
 | `POST` | `/add` | Add an income or expense record |
 | `GET` | `/sumall` | Total balance across all time |
 | `GET` | `/sumbymonth` | Monthly totals |
