@@ -42,6 +42,7 @@ Firebase Function: LineBot
 | `summary on` / `summary off` (`เปิด/ปิดสรุปรายเดือน`) | Monthly summary on the 1st | `ปิดสรุปรายเดือน` |
 | `weekly on` / `weekly off` (`เปิด/ปิดสรุปรายสัปดาห์`) | Weekly summary every Monday 09:00 (Thai time) | `เปิดสรุปรายสัปดาห์` |
 | `remind on` / `remind off` (`เปิด/ปิดเตือนจด`) | Reminder at 21:00 (Thai time) on days with no record; its "วันนี้ไม่ได้ใช้เงิน" button skips today | `เปิดเตือนจด` |
+| `recurring` / `ประจำ` | List the active wallet's recurring items (set them in the web app); recorded automatically at 07:00 Thai time with an undo button (7 days) | `ประจำ` |
 | `+[amount] [note]` | Add income | `+500 salary` |
 | `-[amount] [note]` | Add expense (commas allowed, up to 2 decimals) | `-1,500.50 rent` |
 | `+/-[amount] [note] -d [YYYY-MM-DD]` | Record with specific date | `-80 coffee -d 2024-03-15` |
@@ -149,6 +150,7 @@ This webhook delegates all expense data to an external REST API. The expected en
 | `POST` | `/changeWallet` | Switch the active wallet |
 | `POST` | `/manageWallet` | Rename, trash or restore a wallet |
 | `POST` | `/summarySetting` | Monthly / weekly summary and reminder on/off, "no spending today" |
+| `POST` | `/recurring` | Recurring items: list, undo a record the daily run made |
 | `POST` | `/add` | Add an income or expense record |
 | `GET` | `/sumall` | Total balance across all time |
 | `GET` | `/sumbymonth` | Monthly totals |
