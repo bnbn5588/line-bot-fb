@@ -357,6 +357,16 @@ async function handle_message(event) {
       }
     }
 
+    // Recurring items of the current wallet ("ประจำ" / "recurring"); they are
+    // set in the web app (card "รายการประจำ").
+    if (RECURRING_WORDS.has(notifyKey)) {
+      try {
+        return await recurringList(userid);
+      } catch (error) {
+        return apiErrorMessage(error, "No wallet found, please create wallet first");
+      }
+    }
+
     let wallet;
     try {
       wallet = await getWallet(userid);
@@ -1047,6 +1057,49 @@ const NOTIFY_REPLY = {
 };
 
 const walletHeaders = { "Content-Type": "application/json", "x-api-key": API_KEY };
+
+// ---------- recurring items (backend components/recurring.js)
+const RECURRING_WORDS = new Set(["ประจำ", "รายการประจำ", "recurring"]);
+// The "ยกเลิก" buttons on the 07:00 message work for 7 days.
+const RECURRING_UNDO_TTL_MS = 7 * 24 * 3600 * 1000;
+const TH_MONTHS = ["ม.ค.", "ก.พ.", "มี.ค.", "เม.ย.", "พ.ค.", "มิ.ย.", "ก.ค.", "ส.ค.", "ก.ย.", "ต.ค.", "พ.ย.", "ธ.ค."];
+const thDate = (d) => {
+  const [, m, day] = String(d).split("-").map(Number);
+  return m ? `${day} ${TH_MONTHS[m - 1]}` : String(d);
+};
+
+async function recurringList(userid) {
+  const d = (await axios.post(`${API_URL}/recurring`, { uname: userid, action: "list" }, { headers: walletHeaders })).data.data;
+  const head = `🔁 รายการประจำ · กระเป๋า [${d.wallet.wallet_id}] ${clip(d.wallet.wallet_name || "-", 40)}`;
+  const open = { type: "action", action: { type: "uri", label: "🌐 จัดการในเว็บ", uri: LIFF_URL } };
+  if (!d.items.length) {
+    return {
+      messages: [{ type: "text", text: `${head}
+ยังไม่มีรายการประจำ
+
+ตั้งได้ในหน้าเว็บ ที่การ์ด "รายการประจำ" เช่น ค่าเช่า ค่าเน็ต เงินเดือน ระบบจะบันทึกให้เองทุกเดือน` }],
+      quickReply: { items: [open] },
+    };
+  }
+  const lines = d.items.map((x) => `${x.category.icon} ${clip(x.note, 40)} ${fmtMoney(x.exvalue)}
+    ทุกวันที่ ${x.day} · ` +
+    (x.paused ? "⏸ หยุดชั่วคราว" : `ครั้งถัดไป ${thDate(x.next_date)}`) + (x.notify ? "" : " · 🔕 ไม่แจ้ง"));
+  return {
+    messages: [{ type: "text", text: clip(`${head}\n${lines.join("\n")}\n\nเพิ่ม แก้ไข หรือหยุดชั่วคราวได้ในหน้าเว็บ`, 4900) }],
+    quickReply: { items: [open] },
+  };
+}
+
+// "ยกเลิก <note>" on the 07:00 message: delete that record (only records the
+// recurring run made; the backend checks).
+async function recurringUndo(userid, p, headers) {
+  const made = parseInt(p.get("t") || "", 36);
+  if (!Number.isFinite(made) || Date.now() - made > RECURRING_UNDO_TTL_MS || Date.now() < made - 60000) {
+    return "ปุ่มนี้หมดอายุแล้ว (กดได้ภายใน 7 วัน) ลบรายการได้ในหน้าเว็บ";
+  }
+  const d = (await axios.post(`${API_URL}/recurring`, { uname: userid, action: "undo", id: p.get("id") }, { headers })).data.data;
+  return `↩️ ยกเลิกแล้ว: ${clip(d.note, 60)} ${fmtMoney(d.exvalue)} (${thDate(d.date)})\nรายการประจำยังอยู่ เดือนหน้าจะบันทึกตามปกติ`;
+}
 // "Delete" moves the wallet to the trash (restorable for 30 days, then the
 // backend purges it). A delete-wallet button carries the wallet id, a short hash of its name and
 // when it was made: it stops working after 10 minutes, and never deletes a
@@ -1213,6 +1266,10 @@ async function handle_postback(ev) {
     if (action === "wcancel") {
       return "ไม่ได้ลบกระเป๋า 👍";
     }
+
+    if (action === "recundo") {
+      return await recurringUndo(userid, p, headers);
+    }
   } catch (error) {
     const status = error && error.response && error.response.status;
     if (status === 404 && action === "wrestore") {
@@ -1223,6 +1280,9 @@ async function handle_postback(ev) {
     }
     if (status === 409 && action === "wdelok") {
       return "ลบไม่ได้ เพราะเป็นกระเป๋าเดียวที่มี";
+    }
+    if (status === 404 && action === "recundo") {
+      return "ไม่พบรายการนี้แล้ว (อาจยกเลิกหรือลบไปแล้ว)";
     }
     if (status === 404) {
       return "ไม่พบรายการนี้แล้ว (อาจถูกลบไปแล้ว)";
